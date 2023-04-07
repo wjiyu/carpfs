@@ -1,0 +1,65 @@
+name: verify
+
+on:
+  push:
+    branches:
+    - main
+    - 'release-**'
+    paths:
+    - '**.go'
+  pull_request:
+    branches:
+    - 'main'
+    - 'release-**'
+    paths:
+    - '**.yml'
+    - '**.go'
+    - 'Makefile'
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@v2
+        with:
+          go-version: '1.18.x'
+      - uses: actions/checkout@v2
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: v1.49.0
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: '1.18.x'
+      id: go
+
+    - name: Check out code
+      uses: actions/checkout@v2
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install g++-multilib gcc-mingw-w64
+
+    - name: Build linux target
+      run: GOPATH=$HOME/go make
+
+    - name: build lite
+      run: GOPATH=$HOME/go make juicefs.lite
+
+    - name: build windows
+      run: GOPATH=$HOME/go make juicefs.exe
+
+    - name: build libjfs.dll
+      run: GOPATH=$HOME/go make -C sdk/java/libjfs libjfs.dll
+
+    - name: build ceph
+      run: |
+        sudo apt-get update
+        sudo apt-get install librados-dev
+        GOPATH=$HOME/go make juicefs.ceph
