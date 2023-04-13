@@ -279,7 +279,7 @@ func doTesting(store object.ObjectStorage, key string, data []byte) error {
 	}
 	err = store.Delete(key)
 	if err != nil {
-		// it's OK to don't have delete permission
+		// it's OK to don't have deleted permission
 		fmt.Printf("Failed to delete: %s", err)
 	}
 	return nil

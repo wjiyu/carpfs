@@ -90,6 +90,18 @@ type chunk struct {
 	Slices []byte `xorm:"blob notnull"`
 }
 
+type chunkFile struct {
+	Id      int64    `xorm:"pk bigserial"`
+	Inode   Ino      `xorm:"unique(chunk_file) notnull"`
+	ChunkId uint64   `xorm:"chunkid unique(chunk_file) notnull"`
+	Files   []string `xorm:"blob "`
+	Name    []byte   `xorm:"varbinary(255) "`
+}
+
+func (c *chunkFile) TableName() string {
+	return "jfs_chunk_file"
+}
+
 type sliceRef struct {
 	Id   uint64 `xorm:"pk chunkid"`
 	Size uint32 `xorm:"notnull"`
@@ -249,8 +261,8 @@ func (m *dbMeta) Init(format Format, force bool) error {
 	if err := m.syncTable(new(node), new(symlink), new(xattr)); err != nil {
 		return fmt.Errorf("create table node, symlink, xattr: %s", err)
 	}
-	if err := m.syncTable(new(chunk), new(sliceRef), new(delslices)); err != nil {
-		return fmt.Errorf("create table chunk, chunk_ref, delslices: %s", err)
+	if err := m.syncTable(new(chunk), new(sliceRef), new(delslices), new(chunkFile)); err != nil {
+		return fmt.Errorf("create table chunk, chunk_ref, delslices, chunk_file: %s", err)
 	}
 	if err := m.syncTable(new(session2), new(sustained), new(delfile)); err != nil {
 		return fmt.Errorf("create table session2, sustaind, delfile: %s", err)
@@ -341,7 +353,7 @@ func (m *dbMeta) Reset() error {
 		&node{}, &edge{}, &symlink{}, &xattr{},
 		&chunk{}, &sliceRef{}, &delslices{},
 		&session{}, &session2{}, &sustained{}, &delfile{},
-		&flock{}, &plock{})
+		&flock{}, &plock{}, &chunkFile{})
 }
 
 func (m *dbMeta) doLoad() (data []byte, err error) {
@@ -368,7 +380,7 @@ func (m *dbMeta) doNewSession(sinfo []byte) error {
 		return fmt.Errorf("update table session2, delslices: %s", err)
 	}
 	// add primary key
-	if err = m.syncTable(new(edge), new(chunk), new(xattr), new(sustained)); err != nil {
+	if err = m.syncTable(new(edge), new(chunk), new(chunkFile), new(xattr), new(sustained)); err != nil {
 		return fmt.Errorf("update table edge, chunk, xattr, sustained: %s", err)
 	}
 	// update the owner from uint64 to int64
@@ -1187,6 +1199,10 @@ func (m *dbMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 		if err = mustInsert(s, &edge{Parent: parent, Name: []byte(name), Inode: ino, Type: _type}, &n); err != nil {
 			return err
 		}
+
+		//update chunk file
+		logger.Infof("update chunk file info: %v, %v", ino, name)
+
 		if updateParent {
 			if _, err := s.Cols("nlink", "mtime", "ctime").Update(&pn, &node{Inode: pn.Inode}); err != nil {
 				return err
@@ -1283,6 +1299,13 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string) syscall.Errno {
 		if _, err := s.Delete(&edge{Parent: parent, Name: e.Name}); err != nil {
 			return err
 		}
+
+		// delete chunk file info
+		logger.Infof("delete chunk file: %v", e.Inode)
+		if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
+			return err
+		}
+
 		if updateParent {
 			if _, err = s.Cols("mtime", "ctime").Update(&pn, &node{Inode: pn.Inode}); err != nil {
 				return err
@@ -1383,6 +1406,7 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string) syscall.Errno {
 		if err != nil {
 			return err
 		}
+
 		exist, err := s.ForUpdate().Exist(&edge{Parent: e.Inode})
 		if err != nil {
 			return err
@@ -1410,6 +1434,13 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string) syscall.Errno {
 		if _, err := s.Delete(&edge{Parent: parent, Name: e.Name}); err != nil {
 			return err
 		}
+
+		//delete chunk file info
+		logger.Infof("delete chunk file: %v", e.Inode)
+		if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
+			return err
+		}
+
 		if trash > 0 {
 			if _, err = s.Cols("ctime", "parent").Update(&n, &node{Inode: n.Inode}); err != nil {
 				return err
@@ -1504,6 +1535,8 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		if !ok {
 			return syscall.ENOENT
 		}
+
+		logger.Debugf("rename  file info: %v, %v", nameSrc, nameDst)
 
 		var de = edge{Parent: parentDst, Name: []byte(nameDst)}
 		ok, err = s.ForUpdate().Get(&de)
@@ -1724,6 +1757,21 @@ func (m *dbMeta) doLink(ctx Context, inode, parent Ino, name string, attr *Attr)
 		}
 		if ok || !ok && m.conf.CaseInsensi && m.resolveCase(ctx, parent, name) != nil {
 			return syscall.EEXIST
+		}
+
+		//update chunk file info
+		logger.Infof("update chunk file info: %v, %v", inode, name)
+		var f = chunkFile{Inode: inode}
+		ok, err = s.ForUpdate().Get(&f)
+		if err != nil {
+			return err
+		}
+
+		if ok {
+			logger.Infof("update chunk file info: %v, %v", inode, name)
+			if _, err := s.Cols("files", "name").Update(&f, chunkFile{Name: []byte(name)}); err != nil {
+				return err
+			}
 		}
 
 		var n = node{Inode: inode}
@@ -2024,6 +2072,12 @@ func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 		if err == nil {
 			needCompact = (len(ck.Slices)/sliceBytes)%100 == 99
 		}
+
+		//insert chunk file info
+		if err = mustInsert(s, chunkFile{Inode: inode, ChunkId: slice.Id}); err != nil {
+			return err
+		}
+
 		return err
 	}, inode)
 	if err == nil {
@@ -2230,11 +2284,36 @@ func (m *dbMeta) deleteChunk(inode Ino, indx uint32) error {
 		if err == nil && n == 0 {
 			err = fmt.Errorf("chunk %d:%d changed, try restarting transaction", inode, indx)
 		}
+
 		return err
 	})
 	if err != nil {
 		return fmt.Errorf("delete slice from chunk %s fail: %s, retry later", inode, err)
 	}
+
+	err = m.txn(func(s *xorm.Session) error {
+		//delete chunk file
+		logger.Infof("delete chunk file: %v", inode)
+		var f = chunkFile{Inode: inode}
+		ok, err := s.ForUpdate().MustCols("inode").Get(&f)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+
+		if _, err := s.Delete(&chunkFile{Inode: f.Inode}); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("delete info from chunk file %s fail: %s, retry later", inode, err)
+	}
+
 	for _, s := range ss {
 		if s.id == 0 {
 			continue
@@ -3092,7 +3171,7 @@ func (m *dbMeta) LoadMeta(r io.Reader) error {
 	if err = m.syncTable(new(node), new(edge), new(symlink), new(xattr)); err != nil {
 		return fmt.Errorf("create table node, edge, symlink, xattr: %s", err)
 	}
-	if err = m.syncTable(new(chunk), new(sliceRef), new(delslices)); err != nil {
+	if err = m.syncTable(new(chunk), new(sliceRef), new(chunkFile), new(delslices)); err != nil {
 		return fmt.Errorf("create table chunk, chunk_ref, delslices: %s", err)
 	}
 	if err = m.syncTable(new(session2), new(sustained), new(delfile)); err != nil {
