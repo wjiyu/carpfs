@@ -564,6 +564,7 @@ func (v *VFS) Write(ctx Context, ino Ino, buf []byte, off, fh uint64) (err sysca
 	}
 	defer func() { logit(ctx, "write (%d,%d,%d,%d): %s", ino, size, off, fh, strerr(err)) }()
 	h := v.findHandle(ino, fh)
+	logger.Debugf("ino: %v, h.inode: %v", ino, h.inode)
 	if h == nil {
 		err = syscall.EBADF
 		return

@@ -789,6 +789,7 @@ func (m *dbMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, attr
 			return syscall.ENOENT
 		}
 		*inode = nn.Inode
+		logger.Debugf("name: %v, inode: %v", name, inode)
 		m.parseAttr(&nn.node, attr)
 		return nil
 	}))
@@ -1200,8 +1201,26 @@ func (m *dbMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 			return err
 		}
 
+		logger.Debugf("doMknod: %v, %v", ino, name)
 		//update chunk file
-		logger.Infof("update chunk file info: %v, %v", ino, name)
+		//var f = chunkFile{Inode: ino}
+		//ok, err = s.ForUpdate().Get(&f)
+		//if err != nil {
+		//	return err
+		//}
+		//
+		//if ok {
+		//	logger.Debugf("update chunk file info: %v, %v", ino, name)
+		//	f.Name = []byte(name)
+		//	if _, err = s.Cols("files", "name").Update(&f, chunkFile{Inode: ino}); err != nil {
+		//		return err
+		//	}
+		//} else {
+		//	logger.Debugf("insert chunk file info: %v, %v", ino, name)
+		//	if err = mustInsert(s, chunkFile{Inode: ino, Name: []byte(name)}); err != nil {
+		//		return err
+		//	}
+		//}
 
 		if updateParent {
 			if _, err := s.Cols("nlink", "mtime", "ctime").Update(&pn, &node{Inode: pn.Inode}); err != nil {
@@ -1301,7 +1320,7 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string) syscall.Errno {
 		}
 
 		// delete chunk file info
-		logger.Infof("delete chunk file: %v", e.Inode)
+		logger.Debugf("delete chunk file: %v", e.Inode)
 		if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
 			return err
 		}
@@ -1436,7 +1455,7 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string) syscall.Errno {
 		}
 
 		//delete chunk file info
-		logger.Infof("delete chunk file: %v", e.Inode)
+		logger.Debugf("delete chunk file: %v", e.Inode)
 		if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
 			return err
 		}
@@ -1760,7 +1779,7 @@ func (m *dbMeta) doLink(ctx Context, inode, parent Ino, name string, attr *Attr)
 		}
 
 		//update chunk file info
-		logger.Infof("update chunk file info: %v, %v", inode, name)
+		logger.Debugf("update chunk file info: %v, %v", inode, name)
 		var f = chunkFile{Inode: inode}
 		ok, err = s.ForUpdate().Get(&f)
 		if err != nil {
@@ -2074,10 +2093,16 @@ func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 		}
 
 		//insert chunk file info
-		if err = mustInsert(s, chunkFile{Inode: inode, ChunkId: slice.Id}); err != nil {
+		var e = edge{Inode: inode}
+		ok, err = s.ForUpdate().Get(&e)
+		if err != nil {
 			return err
 		}
 
+		logger.Debugf("insert info chunk file info: %v, %v, %v", inode, slice.Id, string(e.Name))
+		if err = mustInsert(s, chunkFile{Inode: inode, ChunkId: slice.Id, Name: e.Name}); err != nil {
+			return err
+		}
 		return err
 	}, inode)
 	if err == nil {
@@ -2293,7 +2318,7 @@ func (m *dbMeta) deleteChunk(inode Ino, indx uint32) error {
 
 	err = m.txn(func(s *xorm.Session) error {
 		//delete chunk file
-		logger.Infof("delete chunk file: %v", inode)
+		logger.Debugf("delete chunk file: %v", inode)
 		var f = chunkFile{Inode: inode}
 		ok, err := s.ForUpdate().MustCols("inode").Get(&f)
 		if err != nil {
@@ -2969,6 +2994,7 @@ func (m *dbMeta) makeSnap(ses *xorm.Session, bar *utils.Bar) error {
 		return err
 	}
 	m.snap = snap
+	logger.Debugf("make snap: %v", m.snap)
 	return nil
 }
 
