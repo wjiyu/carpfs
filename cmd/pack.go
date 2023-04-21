@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"archive/tar"
+	"github.com/juicedata/juicefs/pkg/meta"
 	"github.com/urfave/cli/v2"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 )
@@ -76,7 +76,7 @@ func pack(ctx *cli.Context) error {
 	//d := filepath.Dir(p)
 	//name := filepath.Base(p)
 
-	packFolder(src, dst, int(ctx.Uint("pack-size")), int(ctx.Uint("works")))
+	packFolder(filepath.Clean(src), filepath.Clean(dst), int(ctx.Uint("pack-size")), int(ctx.Uint("works")))
 
 	return nil
 }
@@ -94,10 +94,18 @@ func packFolder(src, dst string, maxSize, numWorkers int) {
 	// create a channel to signal when all workers have finished
 	done := make(chan bool)
 
+	metaUri := "mysql://root:w995219@(10.151.11.61:3306)/juicefs3"
+	removePassword(metaUri)
+	m := meta.NewClient(metaUri, &meta.Config{Retries: 10, Strict: true, MountPoint: "/mnt/jfs2"})
+	_, err := m.Load(true)
+	if err != nil {
+		logger.Fatalf("load setting: %s", err)
+	}
+
 	// start the workers
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go worker(src, dst, filePathArrays, &wg)
+		go worker(src, dst, filePathArrays, &wg, m)
 	}
 
 	// start the file path extractor
@@ -114,7 +122,6 @@ func packFolder(src, dst string, maxSize, numWorkers int) {
 
 	// loop over the file paths received from the extractor
 	for filePath := range filePaths {
-		//log.Println("file path: %s", filePath)
 		// get the size of the file
 		fileInfo, err := os.Stat(filePath)
 		if err != nil {
@@ -167,7 +174,10 @@ func packFolder(src, dst string, maxSize, numWorkers int) {
 	// wait for all workers to finish or for a timeout
 	select {
 	case <-done:
-		logger.Infof("All workers finished")
+		logger.Infof("All workers finished!")
+
+		//meta.SyncChunkInfo(m, 0, "", meta.Background)
+		//logger.Infof("sync chunk files info finished!")
 	case <-time.After(60 * time.Second):
 		logger.Infof("Timeout waiting for workers to finish")
 	}
@@ -197,16 +207,22 @@ func extractFilePaths(dirPath string, filePaths chan<- string) {
 	close(filePaths)
 }
 
-func worker(src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup) {
+func worker(src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup, m meta.Meta) {
 	// loop over the file path arrays received from the channel
 	for filePathArray := range filePathArrays {
-		logger.Debugf("path array: %v", filePathArray)
+		//tar name
+		var name string
+		//logger.Debugf("path array: %v", filePathArray)
 		// create a tar file
 		tarFile, err := os.CreateTemp(dst, "tar")
 		if err != nil {
 			logger.Errorf("Error creating tar file: %s", err)
 			continue
 		}
+
+		name = tarFile.Name()
+
+		logger.Debugf("tar name: %s", name)
 
 		// create a new tar writer
 		tarWriter := tar.NewWriter(tarFile)
@@ -228,8 +244,9 @@ func worker(src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup)
 			}
 
 			// create a new header for the file
+			relativePath, _ := filepath.Rel(filepath.Dir(src), filePath)
 			header := &tar.Header{
-				Name:    strings.TrimPrefix(filePath, filepath.Join(filepath.Dir(src), "/")),
+				Name:    relativePath,
 				Size:    fileInfo.Size(),
 				Mode:    int64(fileInfo.Mode()),
 				ModTime: fileInfo.ModTime(),
@@ -273,6 +290,9 @@ func worker(src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup)
 
 		// remove the file path array from the channel
 		//<-filePathArrays
+
+		meta.SyncChunkInfo(m, 0, name, meta.Background)
+		logger.Debugf("sync chunk files %s info finished!", name)
 	}
 
 	// signal that the worker has finished

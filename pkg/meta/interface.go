@@ -18,6 +18,8 @@ package meta
 
 import (
 	"fmt"
+	"github.com/juicedata/juicefs/pkg/utils"
+	"github.com/prometheus/client_golang/prometheus"
 	"io"
 	"net/url"
 	"os"
@@ -25,9 +27,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/juicedata/juicefs/pkg/utils"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -353,6 +352,9 @@ type Meta interface {
 	// getBase return the base engine.
 	getBase() *baseMeta
 	InitMetrics(registerer prometheus.Registerer)
+
+	//sync chunk files to table
+	SyncChunkFiles(inode Ino, name string, ctx Context) error
 }
 
 type Creator func(driver, addr string, conf *Config) (Meta, error)
@@ -493,5 +495,11 @@ func GetPaths(m Meta, ctx Context, inode Ino) []string {
 			logger.Warnf("Expect to find %d entries under parent %d, but got %d", count, parent, c)
 		}
 	}
+
+	//logger.Debugf("GetPaths: %v", paths)
 	return paths
+}
+
+func SyncChunkInfo(m Meta, inode Ino, name string, ctx Context) {
+	m.SyncChunkFiles(inode, name, ctx)
 }

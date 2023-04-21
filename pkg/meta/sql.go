@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"runtime"
 	"sort"
 	"strings"
@@ -1787,7 +1788,7 @@ func (m *dbMeta) doLink(ctx Context, inode, parent Ino, name string, attr *Attr)
 		}
 
 		if ok {
-			logger.Infof("update chunk file info: %v, %v", inode, name)
+			logger.Debugf("update chunk file info: %v, %v", inode, name)
 			if _, err := s.Cols("files", "name").Update(&f, chunkFile{Name: []byte(name)}); err != nil {
 				return err
 			}
@@ -2044,6 +2045,7 @@ func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 	defer func() { m.of.InvalidateChunk(inode, indx) }()
 	var newSpace int64
 	var needCompact bool
+
 	err := m.txn(func(s *xorm.Session) error {
 		newSpace = 0
 		var n = node{Inode: inode}
@@ -2100,6 +2102,7 @@ func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 		}
 
 		logger.Debugf("insert info chunk file info: %v, %v, %v", inode, slice.Id, string(e.Name))
+
 		if err = mustInsert(s, chunkFile{Inode: inode, ChunkId: slice.Id, Name: e.Name}); err != nil {
 			return err
 		}
@@ -3303,4 +3306,137 @@ func (m *dbMeta) LoadMeta(r io.Reader) error {
 		}
 		return nil
 	})
+}
+
+func (m *dbMeta) getAbsPaths(ctx Context, inode Ino) []string {
+
+	//get inode relative paths
+	paths := GetPaths(m, ctx, inode)
+
+	//get mount path
+	mountPath := m.conf.MountPoint
+
+	logger.Debugf("mount path: %v", mountPath)
+
+	//get absolute path
+	var absPaths []string
+	for _, p := range paths {
+		absPaths = append(absPaths, path.Join(mountPath, p))
+	}
+
+	logger.Debugf("inode: %v, abs path: %v", inode, absPaths)
+	return absPaths
+}
+
+func (m *dbMeta) SyncChunkFiles(inode Ino, name string, ctx Context) error {
+
+	if name == "" {
+		var filePaths []chunkFile
+		err := m.txn(func(s *xorm.Session) error {
+			err := s.Table("jfs_chunk_file").Find(&filePaths, &chunkFile{Name: []byte(name)})
+			if err != nil {
+				logger.Fatal(err)
+				return err
+			}
+			return err
+		})
+
+		for _, filePath := range filePaths {
+			var files []string
+			files = m.extractChunkFiles(m.getAbsPaths(ctx, filePath.Inode))
+			logger.Debugf("files: %v", files)
+			filePath.Files = files
+			m.txn(func(s *xorm.Session) error {
+				logger.Debugf("update chunk file info: %v", name)
+				if _, err := s.Cols("files").Update(&name, &chunkFile{Inode: filePath.Inode}); err != nil {
+					return err
+				}
+				return nil
+			})
+		}
+		return err
+	}
+
+	if inode == 0 {
+		var names []chunkFile
+		m.txn(func(s *xorm.Session) error {
+			err := s.Table("jfs_chunk_file").Find(&names)
+			if err != nil {
+				logger.Fatal(err)
+				return err
+			}
+			return err
+		})
+
+		for _, name := range names {
+			var files []string
+			files = m.extractChunkFiles(m.getAbsPaths(ctx, name.Inode))
+			logger.Debugf("files: %v", files)
+			name.Files = files
+			m.txn(func(s *xorm.Session) error {
+				logger.Debugf("update chunk file info: %v", name.Inode)
+				if _, err := s.Cols("files").Update(&name, &chunkFile{Inode: name.Inode}); err != nil {
+					return err
+				}
+				return nil
+			})
+		}
+	} else {
+		var files []string
+		//chunk inode->files list
+		logger.Debugf("inode: %d", inode)
+		files = m.extractChunkFiles(m.getAbsPaths(ctx, inode))
+
+		logger.Debugf("files: %v", files)
+
+		//update chunk file database info
+		err := m.txn(func(s *xorm.Session) error {
+			var f = chunkFile{Inode: inode}
+			ok, err := s.ForUpdate().MustCols("inode").Get(&f)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+
+			logger.Debugf("update chunk file info: %v, %v", inode)
+			f.Files = files
+			if _, err := s.Cols("files").Update(&f, chunkFile{Inode: inode}); err != nil {
+				return err
+			}
+			return err
+		})
+		return err
+	}
+
+	return nil
+}
+
+func (m *dbMeta) SyncChunkFile(name string, ctx Context) error {
+
+	var filePaths []chunkFile
+	err := m.txn(func(s *xorm.Session) error {
+		err := s.Table("jfs_chunk_file").Find(&filePaths, &chunkFile{Name: []byte(name)})
+		if err != nil {
+			logger.Fatal(err)
+			return err
+		}
+		return err
+	})
+
+	for _, filePath := range filePaths {
+		var files []string
+		files = m.extractChunkFiles(m.getAbsPaths(ctx, filePath.Inode))
+		logger.Debugf("files: %v", files)
+		filePath.Files = files
+		m.txn(func(s *xorm.Session) error {
+			logger.Debugf("update chunk file info: %v", filePath.Inode)
+			if _, err := s.Cols("files").Update(&name, &chunkFile{Inode: filePath.Inode}); err != nil {
+				return err
+			}
+			return nil
+		})
+	}
+	return err
 }

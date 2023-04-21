@@ -17,8 +17,10 @@
 package meta
 
 import (
+	"archive/tar"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"sort"
@@ -747,6 +749,8 @@ func (m *baseMeta) Create(ctx Context, parent Ino, name string, mode uint16, cum
 	if attr == nil {
 		attr = &Attr{}
 	}
+
+	logger.Debugf("create name: %s, inode: %v", name, inode)
 	eno := m.Mknod(ctx, parent, name, TypeFile, mode, cumask, 0, "", inode, attr)
 	if eno == syscall.EEXIST && (flags&syscall.O_EXCL) == 0 && attr.Typ == TypeFile {
 		eno = 0
@@ -758,10 +762,12 @@ func (m *baseMeta) Create(ctx Context, parent Ino, name string, mode uint16, cum
 }
 
 func (m *baseMeta) Mkdir(ctx Context, parent Ino, name string, mode uint16, cumask uint16, copysgid uint8, inode *Ino, attr *Attr) syscall.Errno {
+	logger.Debugf("Mkdir name: %s, inode: %v", name, inode)
 	return m.Mknod(ctx, parent, name, TypeDirectory, mode, cumask, 0, "", inode, attr)
 }
 
 func (m *baseMeta) Symlink(ctx Context, parent Ino, name string, path string, inode *Ino, attr *Attr) syscall.Errno {
+	logger.Debugf("Symlink name: %s, inode: %v", name, inode)
 	return m.Mknod(ctx, parent, name, TypeSymlink, 0644, 022, 0, path, inode, attr)
 }
 
@@ -1164,4 +1170,40 @@ func (m *baseMeta) cleanupDelayedSlices() {
 	} else if count > 0 {
 		logger.Infof("Cleanup delayed slices: deleted %d slices in %v", count, time.Since(now))
 	}
+}
+
+func (m *baseMeta) extractChunkFiles(absPaths []string) []string {
+	// Create an empty slice to hold the file names.
+	var files []string
+
+	for _, absPath := range absPaths {
+		// Open the tar file for reading.
+		file, err := os.Open(absPath)
+		if err != nil {
+			panic(err)
+		}
+		defer file.Close()
+
+		// Create a new tar reader.
+		reader := tar.NewReader(file)
+
+		// Iterate through the files in the tar archive.
+		for {
+			header, err := reader.Next()
+			if err == io.EOF {
+				// End of tar archive.
+				break
+			}
+
+			if err != nil {
+				break
+			}
+
+			// Add the file name to the slice.
+			files = append(files, header.Name)
+		}
+	}
+	// Print the file names.
+	logger.Debugf("files: %v", files)
+	return files
 }

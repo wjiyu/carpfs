@@ -25,6 +25,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"github.com/pkg/errors"
 	"hash/fnv"
 	"io"
 	"math/rand"
@@ -40,8 +41,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"github.com/pkg/errors"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/juicedata/juicefs/pkg/utils"
@@ -3458,4 +3457,8 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 	}
 	_, err = p.Exec(ctx)
 	return err
+}
+
+func (m *redisMeta) SyncChunkFiles(inode Ino, name string, ctx Context) error {
+	return nil
 }

@@ -316,11 +316,6 @@ func (f *fileWriter) Write(ctx meta.Context, off uint64, data []byte) syscall.Er
 	}
 	f.writewaiting--
 
-	//get file name
-	//rb := utils.ReadBuffer(data)
-	//name := string(rb.Get(int(rb.Get8())))
-	//logger.Debugf("name: %s", name)
-
 	indx := uint32(off / meta.ChunkSize)
 	pos := uint32(off % meta.ChunkSize)
 	for len(data) > 0 {
@@ -338,6 +333,7 @@ func (f *fileWriter) Write(ctx meta.Context, off uint64, data []byte) syscall.Er
 	if off+size > f.length {
 		f.length = off + size
 	}
+
 	return f.err
 }
 
