@@ -354,7 +354,7 @@ type Meta interface {
 	InitMetrics(registerer prometheus.Registerer)
 
 	//sync chunk files to table
-	SyncChunkFiles(inode Ino, name string, ctx Context) error
+	SyncChunkFiles(ctx Context, inode Ino, name string) error
 }
 
 type Creator func(driver, addr string, conf *Config) (Meta, error)
@@ -500,6 +500,10 @@ func GetPaths(m Meta, ctx Context, inode Ino) []string {
 	return paths
 }
 
-func SyncChunkInfo(m Meta, inode Ino, name string, ctx Context) {
-	m.SyncChunkFiles(inode, name, ctx)
+func SyncChunkInfo(ctx Context, m Meta, inode Ino, name string) error {
+	err := m.SyncChunkFiles(ctx, inode, name)
+	if err != nil {
+		logger.Errorf("sync chunk files error: %s", err)
+	}
+	return err
 }

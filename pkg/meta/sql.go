@@ -1202,27 +1202,6 @@ func (m *dbMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 			return err
 		}
 
-		logger.Debugf("doMknod: %v, %v", ino, name)
-		//update chunk file
-		//var f = chunkFile{Inode: ino}
-		//ok, err = s.ForUpdate().Get(&f)
-		//if err != nil {
-		//	return err
-		//}
-		//
-		//if ok {
-		//	logger.Debugf("update chunk file info: %v, %v", ino, name)
-		//	f.Name = []byte(name)
-		//	if _, err = s.Cols("files", "name").Update(&f, chunkFile{Inode: ino}); err != nil {
-		//		return err
-		//	}
-		//} else {
-		//	logger.Debugf("insert chunk file info: %v, %v", ino, name)
-		//	if err = mustInsert(s, chunkFile{Inode: ino, Name: []byte(name)}); err != nil {
-		//		return err
-		//	}
-		//}
-
 		if updateParent {
 			if _, err := s.Cols("nlink", "mtime", "ctime").Update(&pn, &node{Inode: pn.Inode}); err != nil {
 				return err
@@ -3315,8 +3294,33 @@ func (m *dbMeta) getAbsPaths(ctx Context, inode Ino) []string {
 
 	//get mount path
 	mountPath := m.conf.MountPoint
+	//logger.Debugf("mount point: %s", mountPath)
+	if mountPath == "" {
+		err := m.roTxn(func(s *xorm.Session) error {
+			if ok, err := s.IsTableExist(&session2{}); err != nil {
+				return err
+			} else if ok {
+				row := session2{}
+				if ok, err = s.Get(&row); err != nil {
+					return err
+				}
 
-	logger.Debugf("mount path: %v", mountPath)
+				//query db mount point
+				info := &SessionInfo{}
+				json.Unmarshal(row.Info, info)
+				mountPath = info.MountPoint
+				//set meta conf mount point
+				m.conf.MountPoint = mountPath
+			}
+			return nil
+		})
+
+		if err != nil {
+			logger.Errorf("db update mount point error: %s", err)
+		}
+	}
+
+	//logger.Debugf("mount path: %v", mountPath)
 
 	//get absolute path
 	var absPaths []string
@@ -3324,16 +3328,16 @@ func (m *dbMeta) getAbsPaths(ctx Context, inode Ino) []string {
 		absPaths = append(absPaths, path.Join(mountPath, p))
 	}
 
-	logger.Debugf("inode: %v, abs path: %v", inode, absPaths)
+	//logger.Debugf("inode: %v, abs path: %v", inode, absPaths)
 	return absPaths
 }
 
-func (m *dbMeta) SyncChunkFiles(inode Ino, name string, ctx Context) error {
-
+func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
+	//sync the file list by the chunk name
 	if name == "" {
 		var filePaths []chunkFile
 		err := m.txn(func(s *xorm.Session) error {
-			err := s.Table("jfs_chunk_file").Find(&filePaths, &chunkFile{Name: []byte(name)})
+			err := s.Table((&chunkFile{}).TableName()).Find(&filePaths, &chunkFile{Name: []byte(name)})
 			if err != nil {
 				logger.Fatal(err)
 				return err
@@ -3348,19 +3352,20 @@ func (m *dbMeta) SyncChunkFiles(inode Ino, name string, ctx Context) error {
 			filePath.Files = files
 			m.txn(func(s *xorm.Session) error {
 				logger.Debugf("update chunk file info: %v", name)
-				if _, err := s.Cols("files").Update(&name, &chunkFile{Inode: filePath.Inode}); err != nil {
+				if _, err = s.Cols("files").Update(&name, &chunkFile{Inode: filePath.Inode}); err != nil {
 					return err
 				}
-				return nil
+				return err
 			})
 		}
 		return err
 	}
 
+	//sync file name list by the chunk inode
 	if inode == 0 {
 		var names []chunkFile
-		m.txn(func(s *xorm.Session) error {
-			err := s.Table("jfs_chunk_file").Find(&names)
+		err := m.txn(func(s *xorm.Session) error {
+			err := s.Table((&chunkFile{}).TableName()).Find(&names)
 			if err != nil {
 				logger.Fatal(err)
 				return err
@@ -3371,23 +3376,24 @@ func (m *dbMeta) SyncChunkFiles(inode Ino, name string, ctx Context) error {
 		for _, name := range names {
 			var files []string
 			files = m.extractChunkFiles(m.getAbsPaths(ctx, name.Inode))
-			logger.Debugf("files: %v", files)
+			//logger.Debugf("files: %v", files)
 			name.Files = files
 			m.txn(func(s *xorm.Session) error {
 				logger.Debugf("update chunk file info: %v", name.Inode)
-				if _, err := s.Cols("files").Update(&name, &chunkFile{Inode: name.Inode}); err != nil {
+				if _, err = s.Cols("files").Update(&name, &chunkFile{Inode: name.Inode}); err != nil {
 					return err
 				}
-				return nil
+				return err
 			})
 		}
+		return err
 	} else {
 		var files []string
 		//chunk inode->files list
 		logger.Debugf("inode: %d", inode)
 		files = m.extractChunkFiles(m.getAbsPaths(ctx, inode))
 
-		logger.Debugf("files: %v", files)
+		//logger.Debugf("files: %v", files)
 
 		//update chunk file database info
 		err := m.txn(func(s *xorm.Session) error {
@@ -3409,34 +3415,4 @@ func (m *dbMeta) SyncChunkFiles(inode Ino, name string, ctx Context) error {
 		})
 		return err
 	}
-
-	return nil
-}
-
-func (m *dbMeta) SyncChunkFile(name string, ctx Context) error {
-
-	var filePaths []chunkFile
-	err := m.txn(func(s *xorm.Session) error {
-		err := s.Table("jfs_chunk_file").Find(&filePaths, &chunkFile{Name: []byte(name)})
-		if err != nil {
-			logger.Fatal(err)
-			return err
-		}
-		return err
-	})
-
-	for _, filePath := range filePaths {
-		var files []string
-		files = m.extractChunkFiles(m.getAbsPaths(ctx, filePath.Inode))
-		logger.Debugf("files: %v", files)
-		filePath.Files = files
-		m.txn(func(s *xorm.Session) error {
-			logger.Debugf("update chunk file info: %v", filePath.Inode)
-			if _, err := s.Cols("files").Update(&name, &chunkFile{Inode: filePath.Inode}); err != nil {
-				return err
-			}
-			return nil
-		})
-	}
-	return err
 }

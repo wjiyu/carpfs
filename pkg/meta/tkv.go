@@ -2748,6 +2748,6 @@ func (m *kvMeta) LoadMeta(r io.Reader) error {
 	})
 }
 
-func (m *kvMeta) SyncChunkFiles(inode Ino, name string, ctx Context) error {
+func (m *kvMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 	return nil
 }

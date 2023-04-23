@@ -3459,6 +3459,6 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 	return err
 }
 
-func (m *redisMeta) SyncChunkFiles(inode Ino, name string, ctx Context) error {
+func (m *redisMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 	return nil
 }

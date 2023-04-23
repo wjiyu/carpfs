@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	maxPackSize = 4 * 1024 * 1024 // 4MB
-	numWorkers  = 4               // number of workers in the thread pool
+	maxChunkSize = 4 * 1024 * 1024 // 4MB
+	numWorkers   = 4               // number of workers in the thread pool
 )
 
 func cmdPack() *cli.Command {
@@ -28,7 +28,10 @@ func cmdPack() *cli.Command {
 It is used to package the raw small file data set to the storage system.
 
 Examples:
-$ juicefs pack /home/wjy/imagenet /mnt/jfs`,
+$ juicefs pack /home/wjy/imagenet /mnt/jfs -m "mysql://jfs:mypassword@(127.0.0.1:3306)/juicefs"
+# A safer alternative
+$ export META_PASSWORD=mypassword 
+$ juicefs pack /home/wjy/imagenet /mnt/jfs -m "mysql://jfs:@(127.0.0.1:3306)/juicefs"`,
 		Flags: []cli.Flag{
 			&cli.UintFlag{
 				Name:    "pack-size",
@@ -42,6 +45,18 @@ $ juicefs pack /home/wjy/imagenet /mnt/jfs`,
 				Aliases: []string{"w"},
 				Value:   5,
 				Usage:   "number of concurrent threads in the thread pool(max number 20)",
+			},
+
+			&cli.StringFlag{
+				Name:    "meta-url",
+				Aliases: []string{"m"},
+				Usage:   "META-URL is used to connect the metadata engine (Redis, TiKV, MySQL, etc.)",
+			},
+
+			&cli.StringFlag{
+				Name:    "mount-point",
+				Aliases: []string{"p"},
+				Usage:   "mount path",
 			},
 		},
 	}
@@ -62,6 +77,10 @@ func pack(ctx *cli.Context) error {
 		return os.ErrInvalid
 	}
 
+	if ctx.String("meta-url") == "" {
+		return os.ErrInvalid
+	}
+
 	src := ctx.Args().Get(0)
 	dst := ctx.Args().Get(1)
 
@@ -76,14 +95,19 @@ func pack(ctx *cli.Context) error {
 	//d := filepath.Dir(p)
 	//name := filepath.Base(p)
 
-	packFolder(filepath.Clean(src), filepath.Clean(dst), int(ctx.Uint("pack-size")), int(ctx.Uint("works")))
+	packChunk(ctx, filepath.Clean(src), filepath.Clean(dst))
 
 	return nil
 }
 
-func packFolder(src, dst string, maxSize, numWorkers int) {
+func packChunk(ctx *cli.Context, src, dst string) {
 	// create a wait group to wait for all workers to finish
 	var wg sync.WaitGroup
+
+	//pack size
+	maxChunkSize := int(ctx.Uint("pack-size"))
+	//work numbers
+	numWorkers := int(ctx.Uint("works"))
 
 	// create a channel to receive file paths
 	filePaths := make(chan string)
@@ -94,22 +118,23 @@ func packFolder(src, dst string, maxSize, numWorkers int) {
 	// create a channel to signal when all workers have finished
 	done := make(chan bool)
 
-	metaUri := "mysql://root:w995219@(10.151.11.61:3306)/juicefs3"
+	//meta client
+	metaUri := ctx.String("meta-url")
 	removePassword(metaUri)
-	m := meta.NewClient(metaUri, &meta.Config{Retries: 10, Strict: true, MountPoint: "/mnt/jfs2"})
-	_, err := m.Load(true)
-	if err != nil {
-		logger.Fatalf("load setting: %s", err)
-	}
+	m := meta.NewClient(metaUri, &meta.Config{Retries: 10, Strict: true, MountPoint: ctx.String("mount-point")})
+	//_, err := m.Load(true)
+	//if err != nil {
+	//	logger.Fatalf("load setting: %s", err)
+	//}
 
 	// start the workers
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go worker(src, dst, filePathArrays, &wg, m)
+		go worker(m, src, dst, filePathArrays, &wg)
 	}
 
-	// start the file path extractor
-	go extractFilePaths(src, filePaths)
+	// scan data set paths
+	go scanPaths(src, filePaths)
 
 	// create a slice to hold file paths
 	var filePathSlice []string
@@ -120,7 +145,7 @@ func packFolder(src, dst string, maxSize, numWorkers int) {
 	// create a ticker to periodically check the size of the slice
 	ticker := time.NewTicker(time.Second)
 
-	// loop over the file paths received from the extractor
+	// loop over the file paths received from the scan
 	for filePath := range filePaths {
 		// get the size of the file
 		fileInfo, err := os.Stat(filePath)
@@ -131,7 +156,7 @@ func packFolder(src, dst string, maxSize, numWorkers int) {
 		fileSize := fileInfo.Size()
 
 		// if adding the file would exceed the max size, send the slice to the workers
-		if totalSize+fileSize > int64(maxSize*1024*1024) {
+		if totalSize+fileSize > int64(maxChunkSize*1024*1024) {
 			// send the slice to the workers
 			filePathArrays <- filePathSlice
 
@@ -154,7 +179,7 @@ func packFolder(src, dst string, maxSize, numWorkers int) {
 			logger.Debugf("tick: %v", ticker.C)
 			// do nothing
 		default:
-			logger.Debugf("default")
+			//logger.Debugf("default")
 			// do nothing
 		}
 	}
@@ -175,15 +200,12 @@ func packFolder(src, dst string, maxSize, numWorkers int) {
 	select {
 	case <-done:
 		logger.Infof("All workers finished!")
-
-		//meta.SyncChunkInfo(m, 0, "", meta.Background)
-		//logger.Infof("sync chunk files info finished!")
 	case <-time.After(60 * time.Second):
 		logger.Infof("Timeout waiting for workers to finish")
 	}
 }
 
-func extractFilePaths(dirPath string, filePaths chan<- string) {
+func scanPaths(dirPath string, filePaths chan<- string) {
 	// walk the directory tree
 	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -207,7 +229,7 @@ func extractFilePaths(dirPath string, filePaths chan<- string) {
 	close(filePaths)
 }
 
-func worker(src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup, m meta.Meta) {
+func worker(m meta.Meta, src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup) {
 	// loop over the file path arrays received from the channel
 	for filePathArray := range filePathArrays {
 		//tar name
@@ -221,8 +243,6 @@ func worker(src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup,
 		}
 
 		name = tarFile.Name()
-
-		logger.Debugf("tar name: %s", name)
 
 		// create a new tar writer
 		tarWriter := tar.NewWriter(tarFile)
@@ -291,7 +311,12 @@ func worker(src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup,
 		// remove the file path array from the channel
 		//<-filePathArrays
 
-		meta.SyncChunkInfo(m, 0, name, meta.Background)
+		//sync chunk file list info to table
+		err = meta.SyncChunkInfo(meta.Background, m, 0, name)
+		if err != nil {
+			logger.Errorf("sync chunk file info error: %s", err)
+			continue
+		}
 		logger.Debugf("sync chunk files %s info finished!", name)
 	}
 

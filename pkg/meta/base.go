@@ -1204,6 +1204,6 @@ func (m *baseMeta) extractChunkFiles(absPaths []string) []string {
 		}
 	}
 	// Print the file names.
-	logger.Debugf("files: %v", files)
+	//logger.Debugf("files: %v", files)
 	return files
 }
