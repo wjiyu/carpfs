@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,6 +17,11 @@ import (
 const (
 	maxChunkSize = 4 * 1024 * 1024 // 4MB
 	numWorkers   = 4               // number of workers in the thread pool
+)
+
+var (
+	mutex sync.Mutex
+	count uint64
 )
 
 func cmdPack() *cli.Command {
@@ -213,6 +220,13 @@ func scanPaths(dirPath string, filePaths chan<- string) {
 			return nil
 		}
 
+		//ignore hidden file and folder
+		_, fileName := filepath.Split(path)
+		if fileName == "" || strings.HasPrefix(path, ".") {
+			logger.Debugf("ignore hidden file!")
+			return nil
+		}
+
 		// if the path is a file, send it to the channel
 		if !info.IsDir() {
 			filePaths <- path
@@ -230,20 +244,35 @@ func scanPaths(dirPath string, filePaths chan<- string) {
 }
 
 func worker(m meta.Meta, src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup) {
+
+	// Create a directory for the destination path
+	dstDir := dst + string(os.PathSeparator) + "pack"
+	// Check if the directory exists
+	if _, err := os.Stat(dstDir); err != nil {
+		// Create the directory if it does not exist
+		err = os.MkdirAll(dstDir, os.ModePerm)
+		if err != nil {
+			logger.Error(err)
+			panic(err)
+		}
+	}
+
 	// loop over the file path arrays received from the channel
 	for filePathArray := range filePathArrays {
-		//tar name
-		var name string
-		//logger.Debugf("path array: %v", filePathArray)
+		//process tar file name
+		mutex.Lock()
+		tarName := dstDir + string(os.PathSeparator) + filepath.Base(src) + "_" + strconv.FormatUint(count, 10)
+		count++
+		mutex.Unlock()
+
 		// create a tar file
-		tarFile, err := os.CreateTemp(dst, "tar")
+		tarFile, err := os.Create(tarName)
 		if err != nil {
 			logger.Errorf("Error creating tar file: %s", err)
 			continue
 		}
 
-		name = tarFile.Name()
-
+		name := tarFile.Name()
 		// create a new tar writer
 		tarWriter := tar.NewWriter(tarFile)
 

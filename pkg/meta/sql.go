@@ -790,7 +790,7 @@ func (m *dbMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, attr
 			return syscall.ENOENT
 		}
 		*inode = nn.Inode
-		logger.Debugf("name: %v, inode: %v", name, inode)
+		//logger.Debugf("name: %v, inode: %v", name, inode)
 		m.parseAttr(&nn.node, attr)
 		return nil
 	}))
@@ -914,6 +914,7 @@ func (m *dbMeta) appendSlice(s *xorm.Session, inode Ino, indx uint32, buf []byte
 	}
 	if err == nil {
 		if n, _ := r.RowsAffected(); n == 0 {
+			logger.Debugf("append sliece: %v", inode)
 			err = mustInsert(s, &chunk{Inode: inode, Indx: indx, Slices: buf})
 		}
 	}
@@ -2056,12 +2057,50 @@ func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 			return err
 		}
 		buf := marshalSlice(off, slice.Id, slice.Size, slice.Off, slice.Len)
+
+		//query edge inode->name
+		var e = edge{Inode: inode}
+		_, err = s.ForUpdate().Get(&e)
+		if err != nil {
+			return err
+		}
+
 		if ok {
 			if err := m.appendSlice(s, inode, indx, buf); err != nil {
 				return err
 			}
+
+			//chunk file inode->chunkid
+			cs := buildSlice(readSliceBuf(ck.Slices))
+			for _, v := range cs {
+				var cf = chunkFile{Inode: inode, ChunkId: v.Id}
+				ok, err = s.ForUpdate().Get(&cf)
+				if err != nil {
+					return err
+				}
+
+				if ok {
+					logger.Debugf("update chunk file info: %v, %v, %v", inode, slice.Id, string(e.Name))
+					cf.ChunkId = slice.Id
+					if _, err = s.Cols("chunkid").Update(&cf, &chunkFile{Inode: inode, ChunkId: v.Id}); err != nil {
+						return err
+					}
+				} else {
+					logger.Debugf("insert chunk file info: %v, %v, %v", inode, slice.Id, string(e.Name))
+					if err = mustInsert(s, chunkFile{Inode: inode, ChunkId: slice.Id, Name: e.Name}); err != nil {
+						return err
+					}
+				}
+			}
+
 		} else {
 			if err = mustInsert(s, &chunk{Inode: inode, Indx: indx, Slices: buf}); err != nil {
+				return err
+			}
+
+			//insert chunk file info
+			logger.Debugf("insert chunk file info: %v, %v, %v", inode, slice.Id, string(e.Name))
+			if err = mustInsert(s, chunkFile{Inode: inode, ChunkId: slice.Id, Name: e.Name}); err != nil {
 				return err
 			}
 		}
@@ -2073,18 +2112,6 @@ func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 			needCompact = (len(ck.Slices)/sliceBytes)%100 == 99
 		}
 
-		//insert chunk file info
-		var e = edge{Inode: inode}
-		ok, err = s.ForUpdate().Get(&e)
-		if err != nil {
-			return err
-		}
-
-		logger.Debugf("insert info chunk file info: %v, %v, %v", inode, slice.Id, string(e.Name))
-
-		if err = mustInsert(s, chunkFile{Inode: inode, ChunkId: slice.Id, Name: e.Name}); err != nil {
-			return err
-		}
 		return err
 	}, inode)
 	if err == nil {
