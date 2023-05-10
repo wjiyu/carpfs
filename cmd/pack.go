@@ -129,10 +129,11 @@ func packChunk(ctx *cli.Context, src, dst string) {
 	metaUri := ctx.String("meta-url")
 	removePassword(metaUri)
 	m := meta.NewClient(metaUri, &meta.Config{Retries: 10, Strict: true, MountPoint: ctx.String("mount-point")})
-	//_, err := m.Load(true)
-	//if err != nil {
-	//	logger.Fatalf("load setting: %s", err)
-	//}
+	_, err := m.Load(true)
+	if err != nil {
+		logger.Fatalf("load setting: %s", err)
+		panic(err)
+	}
 
 	// start the workers
 	for i := 0; i < numWorkers; i++ {

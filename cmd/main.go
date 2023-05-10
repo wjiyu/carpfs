@@ -74,6 +74,7 @@ func Main(args []string) error {
 			cmdRmr(),
 			cmdSync(),
 			cmdPack(),
+			cmdView(),
 		},
 	}
 

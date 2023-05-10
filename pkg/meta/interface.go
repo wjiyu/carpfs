@@ -355,6 +355,9 @@ type Meta interface {
 
 	//sync chunk files to table
 	SyncChunkFiles(ctx Context, inode Ino, name string) error
+
+	//query chunk info
+	GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error)
 }
 
 type Creator func(driver, addr string, conf *Config) (Meta, error)
@@ -506,4 +509,8 @@ func SyncChunkInfo(ctx Context, m Meta, inode Ino, name string) error {
 		logger.Errorf("sync chunk files error: %s", err)
 	}
 	return err
+}
+
+func ViewChunkMeta(ctx Context, m Meta, inode Ino, name string, isDir bool) ([]string, error) {
+	return m.GetChunkMetaInfo(ctx, inode, name, isDir)
 }

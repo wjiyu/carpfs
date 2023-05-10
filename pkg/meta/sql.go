@@ -80,8 +80,9 @@ type node struct {
 }
 
 type namedNode struct {
-	node `xorm:"extends"`
-	Name []byte `xorm:"varbinary(255)"`
+	node  `xorm:"extends"`
+	Files []string `xorm:"blob"`
+	Name  []byte   `xorm:"varbinary(255)"`
 }
 
 type chunk struct {
@@ -1820,30 +1821,56 @@ func (m *dbMeta) doReaddir(ctx Context, inode Ino, plus uint8, entries *[]*Entry
 		s = s.Table(&edge{})
 		if plus != 0 {
 			s = s.Join("INNER", &node{}, "jfs_edge.inode=jfs_node.inode")
+			//s = s.Join("INNER", &node{}, "jfs_edge.inode=jfs_node.inode").Join("LEFT", &chunkFile{}, "jfs_edge.inode = jfs_chunk_file.inode")
 		}
 		if limit > 0 {
 			s = s.Limit(limit, 0)
 		}
+
 		var nodes []namedNode
 		if err := s.Find(&nodes, &edge{Parent: inode}); err != nil {
 			return err
 		}
+
 		for _, n := range nodes {
 			if len(n.Name) == 0 {
-				logger.Errorf("Corrupt entry with empty name: inode %d parent %d", n.Inode, inode)
+				logger.Errorf("Corrupt entry with empty name: inode %d parent %d", n.node.Inode, inode)
 				continue
 			}
+
+			//if n.Files != nil && len(n.Files) > 0 {
+			//	for _, file := range n.Files {
+			//		entry := &Entry{
+			//			Inode: n.Inode,
+			//			Name:  []byte(html.EscapeString(strings.ReplaceAll(file, "/", "|"))),
+			//			Attr:  &Attr{},
+			//		}
+			//
+			//		if plus != 0 {
+			//			m.parseAttr(&n.node, entry.Attr)
+			//		} else {
+			//			entry.Attr.Typ = n.Type
+			//		}
+			//		logger.Debugf("entry name: %v, inode: %v", string(entry.Name), entry.Inode)
+			//		*entries = append(*entries, entry)
+			//	}
+			//	continue
+			//}
+
 			entry := &Entry{
 				Inode: n.Inode,
 				Name:  n.Name,
 				Attr:  &Attr{},
 			}
+
 			if plus != 0 {
 				m.parseAttr(&n.node, entry.Attr)
 			} else {
 				entry.Attr.Typ = n.Type
 			}
+			//logger.Debugf("entry.name: %v", string(entry.Name))
 			*entries = append(*entries, entry)
+
 		}
 		return nil
 	}))
@@ -3442,4 +3469,52 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 		})
 		return err
 	}
+}
+
+func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error) {
+	var files []string
+	err := m.roTxn(func(s *xorm.Session) error {
+
+		var nodes []namedNode
+		if isDir {
+			s.Table(&edge{})
+			s = s.Join("INNER", &chunkFile{}, "jfs_edge.inode = jfs_chunk_file.inode")
+			if name == "" {
+				s = s.Where("jfs_edge.name like ?", name+"%")
+			}
+
+			if err := s.Find(&nodes, &edge{Parent: inode}); err != nil {
+				logger.Errorf("query meta info error: %v", err)
+				return err
+			}
+		} else {
+			s = s.Table(&chunkFile{})
+			if err := s.Find(&nodes, &chunkFile{Inode: inode}); err != nil {
+				logger.Errorf("query meta info error: %v", err)
+				return err
+			}
+		}
+
+		for _, node := range nodes {
+			if len(node.Name) == 0 {
+				logger.Errorf("Corrupt entry with empty name: inode %d", inode)
+				continue
+			}
+			index := strings.LastIndex(string(node.Name), "_")
+			if index < 0 {
+				logger.Debugf("filter non dataset info: %v", node.Name)
+				continue
+			}
+			subName := string(node.Name)[:index]
+			if name == subName {
+				files = append(files, node.Files...)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		logger.Errorln(err)
+	}
+	return files, err
 }

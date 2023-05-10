@@ -3462,3 +3462,7 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 func (m *redisMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 	return nil
 }
+
+func (m *redisMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error) {
+	return nil, nil
+}
