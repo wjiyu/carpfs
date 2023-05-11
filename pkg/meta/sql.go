@@ -3350,28 +3350,7 @@ func (m *dbMeta) getAbsPaths(ctx Context, inode Ino) []string {
 	mountPath := m.conf.MountPoint
 	//logger.Debugf("mount point: %s", mountPath)
 	if mountPath == "" {
-		err := m.roTxn(func(s *xorm.Session) error {
-			if ok, err := s.IsTableExist(&session2{}); err != nil {
-				return err
-			} else if ok {
-				row := session2{}
-				if ok, err = s.Get(&row); err != nil {
-					return err
-				}
-
-				//query db mount point
-				info := &SessionInfo{}
-				json.Unmarshal(row.Info, info)
-				mountPath = info.MountPoint
-				//set meta conf mount point
-				m.conf.MountPoint = mountPath
-			}
-			return nil
-		})
-
-		if err != nil {
-			logger.Errorf("db update mount point error: %s", err)
-		}
+		m.getMountPath()
 	}
 
 	//logger.Debugf("mount path: %v", mountPath)
@@ -3384,6 +3363,33 @@ func (m *dbMeta) getAbsPaths(ctx Context, inode Ino) []string {
 
 	//logger.Debugf("inode: %v, abs path: %v", inode, absPaths)
 	return absPaths
+}
+
+func (m *dbMeta) getMountPath() error {
+	err := m.roTxn(func(s *xorm.Session) error {
+		if ok, err := s.IsTableExist(&session2{}); err != nil {
+			return err
+		} else if ok {
+			row := session2{}
+			if ok, err = s.Get(&row); err != nil {
+				return err
+			}
+
+			//query db mount point
+			info := &SessionInfo{}
+			json.Unmarshal(row.Info, info)
+			mountPath := info.MountPoint
+			//set meta conf mount point
+			m.conf.MountPoint = mountPath
+		}
+		return nil
+	})
+
+	if err != nil {
+		logger.Errorf("db update mount point error: %s", err)
+		return err
+	}
+	return err
 }
 
 func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
@@ -3474,12 +3480,11 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error) {
 	var files []string
 	err := m.roTxn(func(s *xorm.Session) error {
-
 		var nodes []namedNode
 		if isDir {
 			s.Table(&edge{})
 			s = s.Join("INNER", &chunkFile{}, "jfs_edge.inode = jfs_chunk_file.inode")
-			if name == "" {
+			if name != "" {
 				s = s.Where("jfs_edge.name like ?", name+"%")
 			}
 
@@ -3495,18 +3500,24 @@ func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir boo
 			}
 		}
 
+		//process nodes info, extract the file list
 		for _, node := range nodes {
 			if len(node.Name) == 0 {
 				logger.Errorf("Corrupt entry with empty name: inode %d", inode)
 				continue
 			}
+			logger.Debugf("name: %s", string(node.Name))
 			index := strings.LastIndex(string(node.Name), "_")
 			if index < 0 {
 				logger.Debugf("filter non dataset info: %v", node.Name)
 				continue
 			}
 			subName := string(node.Name)[:index]
-			if name == subName {
+			if name != "" {
+				if name == subName {
+					files = append(files, node.Files...)
+				}
+			} else {
 				files = append(files, node.Files...)
 			}
 		}
@@ -3517,4 +3528,32 @@ func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir boo
 		logger.Errorln(err)
 	}
 	return files, err
+}
+
+func (m *dbMeta) MountPaths() ([]string, error) {
+	var mountPaths []string
+	err := m.roTxn(func(s *xorm.Session) error {
+		if ok, err := s.IsTableExist(&session2{}); err != nil {
+			return err
+		} else if ok {
+			var rows []session2
+			if err = s.Find(&rows); err != nil {
+				return err
+			}
+
+			for _, row := range rows {
+				//query db mount point
+				info := &SessionInfo{}
+				json.Unmarshal(row.Info, info)
+				mountPaths = append(mountPaths, info.MountPoint)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		logger.Errorf("db update mount point error: %s", err)
+		return mountPaths, err
+	}
+	return mountPaths, err
 }

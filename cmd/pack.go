@@ -111,18 +111,14 @@ func packChunk(ctx *cli.Context, src, dst string) {
 	// create a wait group to wait for all workers to finish
 	var wg sync.WaitGroup
 
-	//pack size
 	maxChunkSize := int(ctx.Uint("pack-size"))
-	//work numbers
+
 	numWorkers := int(ctx.Uint("works"))
 
-	// create a channel to receive file paths
 	filePaths := make(chan string)
 
-	// create a channel to receive arrays of file paths
 	filePathArrays := make(chan []string)
 
-	// create a channel to signal when all workers have finished
 	done := make(chan bool)
 
 	//meta client

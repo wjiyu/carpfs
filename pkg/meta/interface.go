@@ -358,6 +358,9 @@ type Meta interface {
 
 	//query chunk info
 	GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error)
+
+	//get mount path
+	MountPaths() ([]string, error)
 }
 
 type Creator func(driver, addr string, conf *Config) (Meta, error)
@@ -403,7 +406,7 @@ func NewClient(uri string, conf *Config) Meta {
 			logger.Fatalf(err.Error())
 		}
 	}
-	logger.Infof("Meta address: %s", utils.RemovePassword(uri))
+	logger.Debugf("Meta address: %s", utils.RemovePassword(uri))
 	f, ok := metaDrivers[driver]
 	if !ok {
 		logger.Fatalf("Invalid meta driver: %s", driver)

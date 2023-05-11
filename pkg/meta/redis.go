@@ -3466,3 +3466,7 @@ func (m *redisMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 func (m *redisMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error) {
 	return nil, nil
 }
+
+func (m *redisMeta) MountPaths() ([]string, error) {
+	return nil, nil
+}

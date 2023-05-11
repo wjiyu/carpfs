@@ -2755,3 +2755,7 @@ func (m *kvMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 func (m *kvMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error) {
 	return nil, nil
 }
+
+func (m *kvMeta) MountPaths() ([]string, error) {
+	return nil, nil
+}

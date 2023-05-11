@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"syscall"
 )
 
@@ -123,6 +124,20 @@ func view(ctx *cli.Context) error {
 	if err != nil {
 		logger.Fatalf("load setting: %s", err)
 		panic(err)
+	}
+
+	mountPaths, _ := m.MountPaths()
+	var isMountPath bool
+	for _, mountPath := range mountPaths {
+		mountPath = filepath.Join(mountPath, "pack")
+		if strings.Contains(path, mountPath) {
+			isMountPath = true
+		}
+	}
+
+	if !isMountPath {
+		logger.Errorf("path is not under mount path pack!")
+		return os.ErrInvalid
 	}
 
 	err = viewMetaInfo(ctx, m, meta.Ino(inode), name, pathInfo.IsDir())
