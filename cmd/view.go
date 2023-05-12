@@ -149,11 +149,17 @@ func view(ctx *cli.Context) error {
 }
 
 func viewMetaInfo(ctx *cli.Context, m meta.Meta, inode meta.Ino, name string, isDir bool) error {
-	files, err := m.GetChunkMetaInfo(meta.Background, inode, name, isDir)
+	chunkMaps, err := m.GetChunkMetaInfo(meta.Background, inode, name, isDir)
 	if err != nil {
 		logger.Errorln(err)
 		return err
 	}
+
+	var files []string
+	for key := range chunkMaps {
+		files = append(files, chunkMaps[key]...)
+	}
+
 	sort.Slice(files, func(i, j int) bool {
 		dirI := filepath.Dir(files[i])
 		dirJ := filepath.Dir(files[j])

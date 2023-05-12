@@ -2752,7 +2752,7 @@ func (m *kvMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 	return nil
 }
 
-func (m *kvMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error) {
+func (m *kvMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) (map[Ino][]string, error) {
 	return nil, nil
 }
 

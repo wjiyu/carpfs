@@ -357,7 +357,7 @@ type Meta interface {
 	SyncChunkFiles(ctx Context, inode Ino, name string) error
 
 	//query chunk info
-	GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error)
+	GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) (map[Ino][]string, error)
 
 	//get mount path
 	MountPaths() ([]string, error)
@@ -514,6 +514,6 @@ func SyncChunkInfo(ctx Context, m Meta, inode Ino, name string) error {
 	return err
 }
 
-func ViewChunkMeta(ctx Context, m Meta, inode Ino, name string, isDir bool) ([]string, error) {
+func ViewChunkMeta(ctx Context, m Meta, inode Ino, name string, isDir bool) (map[Ino][]string, error) {
 	return m.GetChunkMetaInfo(ctx, inode, name, isDir)
 }

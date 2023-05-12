@@ -80,9 +80,10 @@ type node struct {
 }
 
 type namedNode struct {
-	node  `xorm:"extends"`
-	Files []string `xorm:"blob"`
-	Name  []byte   `xorm:"varbinary(255)"`
+	node    `xorm:"extends"`
+	Files   []string `xorm:"blob"`
+	Name    []byte   `xorm:"varbinary(255)"`
+	Chunkid Ino
 }
 
 type chunk struct {
@@ -3477,10 +3478,11 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 	}
 }
 
-func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error) {
-	var files []string
+func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) (map[Ino][]string, error) {
+	var chunkMaps map[Ino][]string
 	err := m.roTxn(func(s *xorm.Session) error {
 		var nodes []namedNode
+		var files []string
 		if isDir {
 			s.Table(&edge{})
 			s = s.Join("INNER", &chunkFile{}, "jfs_edge.inode = jfs_chunk_file.inode")
@@ -3520,6 +3522,8 @@ func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir boo
 			} else {
 				files = append(files, node.Files...)
 			}
+
+			chunkMaps[node.Chunkid] = files
 		}
 		return nil
 	})
@@ -3527,7 +3531,7 @@ func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir boo
 	if err != nil {
 		logger.Errorln(err)
 	}
-	return files, err
+	return chunkMaps, err
 }
 
 func (m *dbMeta) MountPaths() ([]string, error) {

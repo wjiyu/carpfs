@@ -3463,7 +3463,7 @@ func (m *redisMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 	return nil
 }
 
-func (m *redisMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) ([]string, error) {
+func (m *redisMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) (map[Ino][]string, error) {
 	return nil, nil
 }
 
