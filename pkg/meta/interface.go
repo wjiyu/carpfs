@@ -361,6 +361,8 @@ type Meta interface {
 
 	//get mount path
 	MountPaths() ([]string, error)
+
+	GetMetaInfo(name string) (map[Ino][]string, error)
 }
 
 type Creator func(driver, addr string, conf *Config) (Meta, error)

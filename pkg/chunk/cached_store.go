@@ -126,6 +126,7 @@ func (s *rSlice) ReadAt(ctx context.Context, page *Page, off int) (n int, err er
 	}
 
 	key := s.key(indx)
+	logger.Debugf("key: %v", key)
 	if s.store.conf.CacheSize > 0 {
 		start := time.Now()
 		r, err := s.store.bcache.load(key)
@@ -711,6 +712,7 @@ func NewCachedStore(storage object.ObjectStorage, config Config, reg prometheus.
 		}()
 	}
 	store.regMetrics(reg)
+	logger.Debugf("store: %v", store)
 	return store
 }
 
@@ -799,6 +801,7 @@ func (store *cachedStore) uploadStagingFile(key string, stagingPath string) {
 		<-store.currentUpload
 	}()
 
+	logger.Debugf("key: %v, path: %v", key, stagingPath)
 	store.pendingMutex.Lock()
 	item, ok := store.pendingKeys[key]
 	store.pendingMutex.Unlock()
@@ -908,6 +911,7 @@ func (store *cachedStore) FillCache(id uint64, length uint32) error {
 	r := sliceForRead(id, int(length), store)
 	keys := r.keys()
 	var err error
+	logger.Debugf("r: %v", r)
 	for _, k := range keys {
 		f, e := store.bcache.load(k)
 		if e == nil { // already cached

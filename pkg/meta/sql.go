@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"runtime"
 	"sort"
@@ -792,8 +793,8 @@ func (m *dbMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, attr
 			return syscall.ENOENT
 		}
 		*inode = nn.Inode
-		//logger.Debugf("name: %v, inode: %v", name, inode)
 		m.parseAttr(&nn.node, attr)
+		logger.Debugf("name: %v, inode: %v, attr: %v", name, inode, *attr)
 		return nil
 	}))
 }
@@ -807,6 +808,7 @@ func (m *dbMeta) doGetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
 		} else if err == nil {
 			err = syscall.ENOENT
 		}
+		logger.Debugf("get attr: %v", *attr)
 		return err
 	}))
 }
@@ -2032,9 +2034,11 @@ func (m *dbMeta) Read(ctx Context, inode Ino, indx uint32, slices *[]Slice) sysc
 		return errno(err)
 	}
 	ss := readSliceBuf(c.Slices)
+	logger.Debugf("ss: %v", ss)
 	if ss == nil {
 		return syscall.EIO
 	}
+	logger.Debugf("slice: %v", ss)
 	*slices = buildSlice(ss)
 	m.of.CacheChunk(inode, indx, *slices)
 	if !m.conf.ReadOnly && (len(c.Slices)/sliceBytes >= 5 || len(*slices) >= 5) {
@@ -3351,7 +3355,10 @@ func (m *dbMeta) getAbsPaths(ctx Context, inode Ino) []string {
 	mountPath := m.conf.MountPoint
 	//logger.Debugf("mount point: %s", mountPath)
 	if mountPath == "" {
-		m.getMountPath()
+		err := m.getMountPath()
+		if err != nil {
+			return nil
+		}
 	}
 
 	//logger.Debugf("mount path: %v", mountPath)
@@ -3371,17 +3378,29 @@ func (m *dbMeta) getMountPath() error {
 		if ok, err := s.IsTableExist(&session2{}); err != nil {
 			return err
 		} else if ok {
-			row := session2{}
-			if ok, err = s.Get(&row); err != nil {
+			var rows []session2
+			if err = s.Find(&rows); err != nil {
 				return err
 			}
 
-			//query db mount point
-			info := &SessionInfo{}
-			json.Unmarshal(row.Info, info)
-			mountPath := info.MountPoint
-			//set meta conf mount point
-			m.conf.MountPoint = mountPath
+			hostName, err := os.Hostname()
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				//query db mount point
+				info := &SessionInfo{}
+				err = json.Unmarshal(row.Info, info)
+				if err != nil {
+					return err
+				}
+				if info.HostName == hostName {
+					if strings.Contains(info.MountPoint, "/") {
+						m.conf.MountPoint = info.MountPoint
+						break
+					}
+				}
+			}
 		}
 		return nil
 	})
@@ -3411,22 +3430,25 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 			files = m.extractChunkFiles(m.getAbsPaths(ctx, filePath.Inode))
 			logger.Debugf("files: %v", files)
 			filePath.Files = files
-			m.txn(func(s *xorm.Session) error {
+			err := m.txn(func(s *xorm.Session) error {
 				logger.Debugf("update chunk file info: %v", name)
 				if _, err = s.Cols("files").Update(&name, &chunkFile{Inode: filePath.Inode}); err != nil {
 					return err
 				}
 				return err
 			})
+			if err != nil {
+				return err
+			}
 		}
 		return err
 	}
 
 	//sync file name list by the chunk inode
 	if inode == 0 {
-		var names []chunkFile
+		var chunkFiles []chunkFile
 		err := m.txn(func(s *xorm.Session) error {
-			err := s.Table((&chunkFile{}).TableName()).Find(&names)
+			err := s.Table((&chunkFile{}).TableName()).Find(&chunkFiles)
 			if err != nil {
 				logger.Fatal(err)
 				return err
@@ -3434,18 +3456,21 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 			return err
 		})
 
-		for _, name := range names {
+		for _, name := range chunkFiles {
 			var files []string
 			files = m.extractChunkFiles(m.getAbsPaths(ctx, name.Inode))
 			//logger.Debugf("files: %v", files)
 			name.Files = files
-			m.txn(func(s *xorm.Session) error {
+			err := m.txn(func(s *xorm.Session) error {
 				logger.Debugf("update chunk file info: %v", name.Inode)
 				if _, err = s.Cols("files").Update(&name, &chunkFile{Inode: name.Inode}); err != nil {
 					return err
 				}
 				return err
 			})
+			if err != nil {
+				return err
+			}
 		}
 		return err
 	} else {
@@ -3479,7 +3504,7 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 }
 
 func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) (map[Ino][]string, error) {
-	var chunkMaps map[Ino][]string
+	chunkMaps := make(map[Ino][]string)
 	err := m.roTxn(func(s *xorm.Session) error {
 		var nodes []namedNode
 		var files []string
@@ -3545,11 +3570,23 @@ func (m *dbMeta) MountPaths() ([]string, error) {
 				return err
 			}
 
+			hostName, err := os.Hostname()
+			if err != nil {
+				return err
+			}
+
 			for _, row := range rows {
 				//query db mount point
 				info := &SessionInfo{}
-				json.Unmarshal(row.Info, info)
-				mountPaths = append(mountPaths, info.MountPoint)
+				err := json.Unmarshal(row.Info, info)
+				if err != nil {
+					return err
+				}
+				if info.HostName == hostName {
+					if strings.Contains(info.MountPoint, "/") {
+						mountPaths = append(mountPaths, info.MountPoint)
+					}
+				}
 			}
 		}
 		return nil
@@ -3560,4 +3597,53 @@ func (m *dbMeta) MountPaths() ([]string, error) {
 		return mountPaths, err
 	}
 	return mountPaths, err
+}
+
+func (m *dbMeta) GetMetaInfo(name string) (map[Ino][]string, error) {
+	chunkMaps := make(map[Ino][]string)
+	err := m.roTxn(func(s *xorm.Session) error {
+		var nodes []namedNode
+		var files []string
+
+		s.Table(&chunkFile{})
+
+		if name != "" {
+			s = s.Where("jfs_chunk_file.name like ?", name+"%")
+		}
+
+		if err := s.Find(&nodes); err != nil {
+			logger.Errorf("query meta info error: %v", err)
+			return err
+		}
+
+		//process nodes info, extract the file list
+		for _, node := range nodes {
+			if len(node.Name) == 0 {
+				logger.Errorf("Corrupt entry with empty name: name %s", name)
+				continue
+			}
+			logger.Debugf("name: %s", string(node.Name))
+			index := strings.LastIndex(string(node.Name), "_")
+			if index < 0 {
+				logger.Debugf("filter non dataset info: %v", node.Name)
+				continue
+			}
+			subName := string(node.Name)[:index]
+			if name != "" {
+				if name == subName {
+					files = append(files, node.Files...)
+				}
+			} else {
+				files = append(files, node.Files...)
+			}
+
+			chunkMaps[node.Chunkid] = files
+		}
+		return nil
+	})
+
+	if err != nil {
+		logger.Errorln(err)
+	}
+	return chunkMaps, err
 }

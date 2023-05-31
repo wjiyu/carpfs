@@ -174,7 +174,10 @@ func viewMetaInfo(ctx *cli.Context, m meta.Meta, inode meta.Ino, name string, is
 
 	if ctx.Bool("tree") {
 		node := &utils.FileNode{}
-		node.LTree(files)
+		err := node.LTree(files)
+		if err != nil {
+			return err
+		}
 		node.ShowTree("")
 	}
 	return nil

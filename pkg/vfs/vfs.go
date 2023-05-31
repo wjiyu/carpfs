@@ -499,7 +499,10 @@ func (v *VFS) Read(ctx Context, ino Ino, buf []byte, off uint64, fh uint64) (n i
 		if ino == logInode {
 			n = readAccessLog(fh, buf)
 		} else {
-			defer func() { logit(ctx, "read (%d,%d,%d,%d): %s (%d)", ino, size, off, fh, strerr(err), n) }()
+			defer func() {
+				logit(ctx, "read (%d,%d,%d,%d): %s (%d)", ino, size, off, fh, strerr(err), n)
+				logger.Debugf("read (%d,%d,%d,%d): %s (%d)", ino, size, off, fh, strerr(err), n)
+			}()
 			if ino == controlInode && runtime.GOOS == "darwin" {
 				fh = v.getControlHandle(ctx.Pid())
 			}
@@ -530,6 +533,7 @@ func (v *VFS) Read(ctx Context, ino Ino, buf []byte, off uint64, fh uint64) (n i
 	defer func() {
 		readSizeHistogram.Observe(float64(n))
 		logit(ctx, "read (%d,%d,%d): %s (%d)", ino, size, off, strerr(err), n)
+		logger.Debugf("read (%d,%d,%d): %s (%d)", ino, size, off, strerr(err), n)
 	}()
 	h := v.findHandle(ino, fh)
 	if h == nil {
@@ -558,6 +562,7 @@ func (v *VFS) Read(ctx Context, ino Ino, buf []byte, off uint64, fh uint64) (n i
 	if err == syscall.ENOENT {
 		err = syscall.EBADF
 	}
+	//logger.Debugf("buf: %v", string(buf))
 	h.removeOp(ctx)
 	return
 }

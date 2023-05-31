@@ -52,6 +52,7 @@ func (o *openfiles) OpenCheck(ino Ino, attr *Attr) bool {
 	o.Lock()
 	defer o.Unlock()
 	of, ok := o.files[ino]
+	logger.Debugf("expire time: %v", o.expire)
 	if ok && time.Since(of.lastCheck) < o.expire {
 		if attr != nil {
 			*attr = of.attr
@@ -124,6 +125,7 @@ func (o *openfiles) Update(ino Ino, attr *Attr) bool {
 		}
 		of.attr = *attr
 		of.lastCheck = time.Now()
+		logger.Debugf("update attr: %v", of.attr)
 		return true
 	}
 	return false

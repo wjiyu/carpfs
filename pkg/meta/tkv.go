@@ -2759,3 +2759,7 @@ func (m *kvMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir boo
 func (m *kvMeta) MountPaths() ([]string, error) {
 	return nil, nil
 }
+
+func (m *kvMeta) GetMetaInfo(name string) (map[Ino][]string, error) {
+	return nil, nil
+}

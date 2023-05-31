@@ -3470,3 +3470,7 @@ func (m *redisMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir 
 func (m *redisMeta) MountPaths() ([]string, error) {
 	return nil, nil
 }
+
+func (m *redisMeta) GetMetaInfo(name string) (map[Ino][]string, error) {
+	return nil, nil
+}
