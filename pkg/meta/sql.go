@@ -804,11 +804,11 @@ func (m *dbMeta) doGetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
 		var n = node{Inode: inode}
 		ok, err := s.Get(&n)
 		if ok {
+			logger.Debugf("get attr: %v", *attr)
 			m.parseAttr(&n, attr)
 		} else if err == nil {
 			err = syscall.ENOENT
 		}
-		logger.Debugf("get attr: %v", *attr)
 		return err
 	}))
 }
@@ -3352,15 +3352,15 @@ func (m *dbMeta) getAbsPaths(ctx Context, inode Ino) []string {
 	paths := GetPaths(m, ctx, inode)
 
 	//get mount path
-	mountPath := m.conf.MountPoint
-	//logger.Debugf("mount point: %s", mountPath)
-	if mountPath == "" {
+
+	if m.conf.MountPoint == "" {
 		err := m.getMountPath()
 		if err != nil {
 			return nil
 		}
 	}
 
+	mountPath := m.conf.MountPoint
 	//logger.Debugf("mount path: %v", mountPath)
 
 	//get absolute path
