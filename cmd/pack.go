@@ -243,7 +243,7 @@ func scanPaths(dirPath string, filePaths chan<- string) {
 func worker(m meta.Meta, src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup) {
 
 	// Create a directory for the destination path
-	dstDir := dst + string(os.PathSeparator) + "pack"
+	dstDir := dst + string(os.PathSeparator) + "pack" + string(os.PathSeparator) + filepath.Base(src)
 	// Check if the directory exists
 	if _, err := os.Stat(dstDir); err != nil {
 		// Create the directory if it does not exist
