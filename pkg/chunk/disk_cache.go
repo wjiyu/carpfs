@@ -258,6 +258,7 @@ func (cache *cacheStore) load(key string) (ReadCloser, error) {
 	}
 	cache.Unlock()
 	f, err := os.Open(cache.cachePath(key))
+	logger.Debugf("cachePath: %s", cache.cachePath(key))
 	cache.Lock()
 	if err == nil {
 		if it, ok := cache.keys[key]; ok {

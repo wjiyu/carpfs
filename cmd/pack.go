@@ -9,9 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
-	"time"
 )
 
 const (
@@ -51,7 +49,21 @@ $ juicefs pack /home/wjy/imagenet /mnt/jfs -m "mysql://jfs:@(127.0.0.1:3306)/jui
 				Name:    "works",
 				Aliases: []string{"w"},
 				Value:   5,
-				Usage:   "number of concurrent threads in the thread pool(max number 20)",
+				Usage:   "number of concurrent threads in the thread pool(max number 300)",
+			},
+
+			&cli.UintFlag{
+				Name:    "scan-threads",
+				Aliases: []string{"t"},
+				Value:   5,
+				Usage:   "number of scan dir concurrent threads in the thread pool(max number 300)",
+			},
+
+			&cli.UintFlag{
+				Name:    "partition-threads",
+				Aliases: []string{"r"},
+				Value:   5,
+				Usage:   "number of partition concurrent threads in the thread pool(max number 500)",
 			},
 
 			&cli.StringFlag{
@@ -80,7 +92,7 @@ func pack(ctx *cli.Context) error {
 		return os.ErrInvalid
 	}
 
-	if ctx.Uint("works") <= 0 || ctx.Uint("works") > 20 {
+	if ctx.Uint("works") <= 0 || ctx.Uint("works") > 300 {
 		return os.ErrInvalid
 	}
 
@@ -115,7 +127,11 @@ func packChunk(ctx *cli.Context, src, dst string) {
 
 	numWorkers := int(ctx.Uint("works"))
 
-	filePaths := make(chan string)
+	scanWorkers := int(ctx.Uint("scan-threads"))
+
+	partitionWorkers := int(ctx.Uint("partition-threads"))
+
+	filePaths := make(chan map[string]int64)
 
 	filePathArrays := make(chan []string)
 
@@ -131,6 +147,8 @@ func packChunk(ctx *cli.Context, src, dst string) {
 		panic(err)
 	}
 
+	//defer m.CloseSession()
+
 	// start the workers
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
@@ -138,61 +156,157 @@ func packChunk(ctx *cli.Context, src, dst string) {
 	}
 
 	// scan data set paths
-	go scanPaths(src, filePaths)
+	//go scanPaths(src, filePaths)
+	// create a wait group to wait for all scan workers to finish
+	// Define the semaphore to limit the number of threads
+	sem := make(chan struct{}, scanWorkers)
+	var wgScan sync.WaitGroup
+	// scan data set paths
+	wg.Add(1)
+	wgScan.Add(1)
+	go func() {
+		defer func() {
+			wg.Done()
+			wgScan.Done()
+		}()
 
-	// create a slice to hold file paths
-	var filePathSlice []string
+		if err := scanPaths(src, filePaths, sem, &wgScan); err != nil {
+			logger.Errorf("Error scanning directory: %v\n", err)
+			os.Exit(1)
+		}
+		//close(filePaths)
+	}()
 
-	// create a variable to hold the total size of the files in the slice
-	var totalSize int64
+	// Wait for all scan works to finish
+	go func() {
+		wgScan.Wait()
+		close(filePaths)
+	}()
+
+	//// create a slice to hold file paths
+	//var filePathSlice []string
+	//
+	//// create a variable to hold the total size of the files in the slice
+	//var totalSize int64
 
 	// create a ticker to periodically check the size of the slice
-	ticker := time.NewTicker(time.Second)
+	//ticker := time.NewTicker(time.Second)
 
-	// loop over the file paths received from the scan
-	for filePath := range filePaths {
-		// get the size of the file
-		fileInfo, err := os.Stat(filePath)
-		if err != nil {
-			logger.Errorf("Error getting file info for %s: %s", filePath, err)
-			continue
-		}
-		fileSize := fileInfo.Size()
+	pathSlices := make(chan []string)
 
-		// if adding the file would exceed the max size, send the slice to the workers
-		if totalSize+fileSize > int64(maxChunkSize*1024*1024) {
-			// send the slice to the workers
-			filePathArrays <- filePathSlice
+	var wgPart sync.WaitGroup
+	for i := 0; i < partitionWorkers; i++ {
+		wg.Add(1)
+		wgPart.Add(1)
+		go func() {
+			defer wg.Done()
+			defer wgPart.Done()
+			// create a variable to hold the total size of the files in the slice
+			var totalSize int64
+			// create a slice to hold file paths
+			var filePathSlice []string
+			// loop over the file paths received from the scan
+			for fileMap := range filePaths {
+				for filePath, fileSize := range fileMap {
+					//// get the size of the file
+					//fileInfo, err := os.Stat(filePath)
+					//if err != nil {
+					//	logger.Errorf("Error getting file info for %s: %s", filePath, err)
+					//	continue
+					//}
+					//fileSize := fileInfo.Size()
 
-			// create a new slice to hold file paths
-			filePathSlice = []string{filePath}
+					// if adding the file would exceed the max size, send the slice to the workers
+					if totalSize+fileSize > int64(maxChunkSize*1024*1024) {
+						// send the slice to the workers
+						filePathArrays <- filePathSlice
 
-			// reset the total size
-			totalSize = fileSize
-		} else {
-			// add the file path to the slice
-			filePathSlice = append(filePathSlice, filePath)
+						// create a new slice to hold file paths
+						filePathSlice = []string{filePath}
 
-			// add the file size to the total size
-			totalSize += fileSize
-		}
+						// reset the total size
+						totalSize = fileSize
+					} else {
+						// add the file path to the slice
+						filePathSlice = append(filePathSlice, filePath)
 
-		// check if the ticker has ticked
-		select {
-		case <-ticker.C:
-			logger.Debugf("tick: %v", ticker.C)
-			// do nothing
-		default:
-			//logger.Debugf("default")
-			// do nothing
-		}
+						// add the file size to the total size
+						totalSize += fileSize
+					}
+
+				}
+				//check if the ticker has ticked
+				select {
+				//case <-ticker.C:
+				//	logger.Debugf("tick: %v", ticker.C)
+				// do nothing
+				default:
+					//logger.Debugf("default")
+					// do nothing
+				}
+			}
+
+			// send the final slice to the workers
+			//sliceMap := make(map[int64][]string)
+			//sliceMap[totalSize] = filePathSlice
+			pathSlices <- filePathSlice
+			//filePathArrays <- filePathSlice
+		}()
 	}
 
-	// send the final slice to the workers
-	filePathArrays <- filePathSlice
+	//// loop over the file paths received from the scan
+	//for fileMap := range filePaths {
+	//	for filePath, fileSize := range fileMap {
+	//		//// get the size of the file
+	//		//fileInfo, err := os.Stat(filePath)
+	//		//if err != nil {
+	//		//	logger.Errorf("Error getting file info for %s: %s", filePath, err)
+	//		//	continue
+	//		//}
+	//		//fileSize := fileInfo.Size()
+	//
+	//		// if adding the file would exceed the max size, send the slice to the workers
+	//		if totalSize+fileSize > int64(maxChunkSize*1024*1024) {
+	//			// send the slice to the workers
+	//			filePathArrays <- filePathSlice
+	//
+	//			// create a new slice to hold file paths
+	//			filePathSlice = []string{filePath}
+	//
+	//			// reset the total size
+	//			totalSize = fileSize
+	//		} else {
+	//			// add the file path to the slice
+	//			filePathSlice = append(filePathSlice, filePath)
+	//
+	//			// add the file size to the total size
+	//			totalSize += fileSize
+	//		}
+	//	}
+	//	// check if the ticker has ticked
+	//	select {
+	//	case <-ticker.C:
+	//		logger.Debugf("tick: %v", ticker.C)
+	//		// do nothing
+	//	default:
+	//		//logger.Debugf("default")
+	//		// do nothing
+	//	}
+	//}
+	//
+	//// send the final slice to the workers
+	//filePathArrays <- filePathSlice
+	//
+	//// close the file path arrays channel
+	//close(filePathArrays)
 
-	// close the file path arrays channel
-	close(filePathArrays)
+	wg.Add(1)
+	go scanSlice(pathSlices, filePathArrays, &wg, int64(maxChunkSize*1024*1024))
+	// Wait for all scan works to finish
+	go func() {
+		wgPart.Wait()
+		close(pathSlices)
+	}()
 
 	// wait for all workers to finish
 	go func() {
@@ -204,41 +318,122 @@ func packChunk(ctx *cli.Context, src, dst string) {
 	select {
 	case <-done:
 		logger.Infof("All workers finished!")
-	case <-time.After(60 * time.Second):
-		logger.Infof("Timeout waiting for workers to finish")
+		//case <-time.After(60 * time.Second):
+		//	logger.Infof("Timeout waiting for workers to finish")
 	}
 }
 
-func scanPaths(dirPath string, filePaths chan<- string) {
-	// walk the directory tree
-	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			logger.Fatalf("Error walking path %s: %s", path, err)
-			return nil
+func scanSlice(pathSlices <-chan []string, filePathArrays chan<- []string, wg *sync.WaitGroup, maxChunkSize int64) {
+	var newSlices []string
+	var sumSize int64
+	defer func() {
+		// close the file path arrays channel
+		close(filePathArrays)
+		wg.Done()
+	}()
+	// create a variable to hold the total size of the files in the slice
+	for pathSlice := range pathSlices {
+		//log.Printf("pathSlice: %v", pathSlice)
+		for _, filePath := range pathSlice {
+			fileInfo, err := os.Stat(filePath)
+			if err != nil {
+				logger.Errorf("Error getting file info for %s: %s", filePath, err)
+				continue
+			}
+			fileSize := fileInfo.Size()
+			//log.Println(sumSize, fileSize)
+			// if adding the file would exceed the max size, send the slice to the workers
+			if sumSize+fileSize > maxChunkSize {
+				// send the slice to the workers
+				filePathArrays <- newSlices
+
+				// create a new slice to hold file paths
+				newSlices = []string{filePath}
+
+				// reset the total size
+				sumSize = fileSize
+			} else {
+				// add the file path to the slice
+				newSlices = append(newSlices, filePath)
+
+				// add the file size to the total size
+				sumSize += fileSize
+			}
+		}
+	}
+
+	filePathArrays <- newSlices
+}
+
+func scanPaths(dirPath string, filePaths chan<- map[string]int64, sem chan struct{}, wg *sync.WaitGroup) error {
+	//extract dir list
+	files, err := os.ReadDir(dirPath)
+	if err != nil {
+		logger.Fatalf("Error read directory: %v\n", err)
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			// Acquire a semaphore before starting a new worker
+			sem <- struct{}{}
+			wg.Add(1)
+			path := filepath.Join(dirPath, file.Name())
+			//log.Printf("dir: %s", path)
+			go func(path string) {
+				defer func() {
+					// Release the semaphore after the worker is done
+					<-sem
+					wg.Done()
+				}()
+				if err := scanPaths(path, filePaths, sem, wg); err != nil {
+					logger.Debugf("Error scanning directory: %v\n", err)
+				}
+			}(path)
+			// Skip processing the directory in the current goroutine
+			continue
 		}
 
-		//ignore hidden file and folder
-		_, fileName := filepath.Split(path)
-		if fileName == "" || strings.HasPrefix(path, ".") {
-			logger.Debugf("ignore hidden file!")
-			return nil
-		}
+		fileMap := make(map[string]int64)
+		info, _ := file.Info()
+		fileMap[filepath.Join(dirPath, file.Name())] = info.Size()
 
 		// if the path is a file, send it to the channel
-		if !info.IsDir() {
-			filePaths <- path
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		logger.Fatalf("Error walking directory %s: %s", dirPath, err)
+		filePaths <- fileMap
 	}
 
-	// close the file paths channel
-	close(filePaths)
+	return err
 }
+
+//func scanPaths(dirPath string, filePaths chan<- string) {
+//	// walk the directory tree
+//	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+//		if err != nil {
+//			logger.Fatalf("Error walking path %s: %s", path, err)
+//			return nil
+//		}
+//
+//		//ignore hidden file and folder
+//		_, fileName := filepath.Split(path)
+//		if fileName == "" || strings.HasPrefix(path, ".") {
+//			logger.Debugf("ignore hidden file!")
+//			return nil
+//		}
+//
+//		// if the path is a file, send it to the channel
+//		if !info.IsDir() {
+//			filePaths <- path
+//		}
+//
+//		return nil
+//	})
+//
+//	if err != nil {
+//		logger.Fatalf("Error walking directory %s: %s", dirPath, err)
+//	}
+//
+//	// close the file paths channel
+//	close(filePaths)
+//}
 
 func worker(m meta.Meta, src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup) {
 
@@ -338,7 +533,7 @@ func worker(m meta.Meta, src, dst string, filePathArrays <-chan []string, wg *sy
 		//<-filePathArrays
 
 		//sync chunk file list info to table
-		err = meta.SyncChunkInfo(meta.Background, m, 0, name)
+		err = meta.SyncChunkInfo(meta.Background, m, 0, filepath.Base(name))
 		if err != nil {
 			logger.Errorf("sync chunk file info error: %s", err)
 			continue
@@ -347,5 +542,7 @@ func worker(m meta.Meta, src, dst string, filePathArrays <-chan []string, wg *sy
 	}
 
 	// signal that the worker has finished
-	wg.Done()
+	defer func() {
+		wg.Done()
+	}()
 }
