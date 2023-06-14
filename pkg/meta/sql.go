@@ -98,8 +98,8 @@ type chunkFile struct {
 	Id      int64    `xorm:"pk bigserial"`
 	Inode   Ino      `xorm:"unique(chunk_file) notnull"`
 	ChunkId uint64   `xorm:"chunkid unique(chunk_file) notnull"`
-	Files   []string `xorm:"blob "`
-	Name    []byte   `xorm:"varbinary(255) "`
+	Files   []string `xorm:"mediumblob"`
+	Name    []byte   `xorm:"varbinary(255)"`
 }
 
 func (c *chunkFile) TableName() string {

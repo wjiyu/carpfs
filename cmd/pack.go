@@ -49,21 +49,21 @@ $ juicefs pack /home/wjy/imagenet /mnt/jfs -m "mysql://jfs:@(127.0.0.1:3306)/jui
 				Name:    "works",
 				Aliases: []string{"w"},
 				Value:   5,
-				Usage:   "number of concurrent threads in the thread pool(max number 300)",
+				Usage:   "number of concurrent threads in the thread pool(max number 100)",
 			},
 
 			&cli.UintFlag{
 				Name:    "scan-threads",
 				Aliases: []string{"t"},
 				Value:   5,
-				Usage:   "number of scan dir concurrent threads in the thread pool(max number 300)",
+				Usage:   "number of scan dir concurrent threads in the thread pool(max number 100)",
 			},
 
 			&cli.UintFlag{
 				Name:    "partition-threads",
 				Aliases: []string{"r"},
 				Value:   5,
-				Usage:   "number of partition concurrent threads in the thread pool(max number 500)",
+				Usage:   "number of partition concurrent threads in the thread pool(max number 100)",
 			},
 
 			&cli.StringFlag{
@@ -92,7 +92,15 @@ func pack(ctx *cli.Context) error {
 		return os.ErrInvalid
 	}
 
-	if ctx.Uint("works") <= 0 || ctx.Uint("works") > 300 {
+	if ctx.Uint("works") <= 0 || ctx.Uint("works") > 100 {
+		return os.ErrInvalid
+	}
+
+	if ctx.Uint("scan-threads") <= 0 || ctx.Uint("scan-threads") > 100 {
+		return os.ErrInvalid
+	}
+
+	if ctx.Uint("partition-threads") <= 0 || ctx.Uint("partition-threads") > 100 {
 		return os.ErrInvalid
 	}
 
