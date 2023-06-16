@@ -3463,14 +3463,14 @@ func (m *redisMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 	return nil
 }
 
-func (m *redisMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) (map[Ino][]string, error) {
-	return nil, nil
+func (m *redisMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int) (map[uint64][]string, []string, error) {
+	return nil, nil, nil
 }
 
 func (m *redisMeta) MountPaths() ([]string, error) {
 	return nil, nil
 }
 
-func (m *redisMeta) GetMetaInfo(name string) (map[Ino][]string, error) {
-	return nil, nil
-}
+//func (m *redisMeta) GetMetaInfo(name string) (map[uint64][]string, error) {
+//	return nil, nil
+//}

@@ -357,12 +357,12 @@ type Meta interface {
 	SyncChunkFiles(ctx Context, inode Ino, name string) error
 
 	//query chunk info
-	GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) (map[Ino][]string, error)
+	GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int) (map[uint64][]string, []string, error)
 
 	//get mount path
 	MountPaths() ([]string, error)
 
-	GetMetaInfo(name string) (map[Ino][]string, error)
+	//GetMetaInfo(name string) (map[uint64][]string, error)
 }
 
 type Creator func(driver, addr string, conf *Config) (Meta, error)
@@ -516,6 +516,6 @@ func SyncChunkInfo(ctx Context, m Meta, inode Ino, name string) error {
 	return err
 }
 
-func ViewChunkMeta(ctx Context, m Meta, inode Ino, name string, isDir bool) (map[Ino][]string, error) {
-	return m.GetChunkMetaInfo(ctx, inode, name, isDir)
+func ViewChunkMeta(ctx Context, m Meta, inode Ino, name string, isDir bool, work int) (map[uint64][]string, []string, error) {
+	return m.GetChunkMetaInfo(ctx, inode, name, isDir, work)
 }

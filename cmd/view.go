@@ -3,13 +3,13 @@ package cmd
 import (
 	"fmt"
 	"github.com/juicedata/juicefs/pkg/meta"
-	"github.com/juicedata/juicefs/pkg/utils"
 	"github.com/urfave/cli/v2"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -47,11 +47,11 @@ $ juicefs view /home/wjy/pack/imagenet -m "mysql://jfs:mypassword@(127.0.0.1:330
 $ export META_PASSWORD=mypassword 
 $ juicefs view /home/wjy/pack/imagenet -m "mysql://jfs:@(127.0.0.1:3306)/juicefs"`,
 		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:    "tree",
-				Aliases: []string{"t"},
-				Usage:   "the tree structure displays the view",
-			},
+			//&cli.BoolFlag{
+			//	Name:    "tree",
+			//	Aliases: []string{"t"},
+			//	Usage:   "the tree structure displays the view",
+			//},
 
 			&cli.BoolFlag{
 				Name:    "list",
@@ -65,6 +65,13 @@ $ juicefs view /home/wjy/pack/imagenet -m "mysql://jfs:@(127.0.0.1:3306)/juicefs
 				Aliases: []string{"m"},
 				Usage:   "META-URL is used to connect the metadata engine (Redis, TiKV, MySQL, etc.)",
 			},
+
+			&cli.UintFlag{
+				Name:    "works",
+				Aliases: []string{"w"},
+				Value:   50,
+				Usage:   "number of concurrent threads in the thread pool(max number 500)",
+			},
 		},
 	}
 }
@@ -77,6 +84,10 @@ func view(ctx *cli.Context) error {
 	}
 
 	if ctx.String("meta-url") == "" {
+		return os.ErrInvalid
+	}
+
+	if ctx.Uint("works") <= 0 || ctx.Uint("works") > 500 {
 		return os.ErrInvalid
 	}
 
@@ -140,7 +151,7 @@ func view(ctx *cli.Context) error {
 		return os.ErrInvalid
 	}
 
-	err = viewMetaInfo(ctx, m, meta.Ino(inode), name, pathInfo.IsDir())
+	err = viewMetaInfo(ctx, m, meta.Ino(inode), name, pathInfo.IsDir(), int(ctx.Uint("works")))
 	if err != nil {
 		logger.Errorln(err)
 		return err
@@ -148,37 +159,55 @@ func view(ctx *cli.Context) error {
 	return nil
 }
 
-func viewMetaInfo(ctx *cli.Context, m meta.Meta, inode meta.Ino, name string, isDir bool) error {
-	chunkMaps, err := m.GetChunkMetaInfo(meta.Background, inode, name, isDir)
+func viewMetaInfo(ctx *cli.Context, m meta.Meta, inode meta.Ino, name string, isDir bool, work int) error {
+	_, files, err := m.GetChunkMetaInfo(meta.Background, inode, name, isDir, work)
 	if err != nil {
 		logger.Errorln(err)
 		return err
 	}
 
-	var files []string
-	for key := range chunkMaps {
-		files = append(files, chunkMaps[key]...)
+	if len(files) <= 0 {
+		return os.ErrInvalid
 	}
 
-	sort.Slice(files, func(i, j int) bool {
-		dirI := filepath.Dir(files[i])
-		dirJ := filepath.Dir(files[j])
-		return dirI < dirJ
-	})
+	//sort.Slice(files, func(i, j int) bool {
+	//	dirI := filepath.Dir(files[i])
+	//	dirJ := filepath.Dir(files[j])
+	//	return dirI < dirJ
+	//})
 
-	if ctx.Bool("list") && !ctx.Bool("tree") {
-		for _, file := range files {
-			fmt.Println(file)
+	fmt.Println(len(files))
+	var wg sync.WaitGroup
+	size := int(math.Ceil(float64(len(files)) / float64(work)))
+	for i := 0; i < work; i++ {
+		start := i * size
+		end := start + size
+		if i == work-1 {
+			end = len(files)
 		}
+		wg.Add(1)
+		go func(slice []string) {
+			defer wg.Done()
+			for _, file := range slice {
+				fmt.Println(file)
+			}
+		}(files[start:end])
 	}
 
-	if ctx.Bool("tree") {
-		node := &utils.FileNode{}
-		err := node.LTree(files)
-		if err != nil {
-			return err
-		}
-		node.ShowTree("")
-	}
+	wg.Wait()
+	//if ctx.Bool("list") && !ctx.Bool("tree") {
+	//for _, file := range files {
+	//	fmt.Println(file)
+	//}
+	//}
+
+	//if ctx.Bool("tree") {
+	//	node := &utils.FileNode{}
+	//	err := node.LTree(files)
+	//	if err != nil {
+	//		return err
+	//	}
+	//	node.ShowTree("")
+	//}
 	return nil
 }

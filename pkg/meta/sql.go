@@ -22,11 +22,14 @@ package meta
 import (
 	"bufio"
 	"bytes"
+	"compress/zlib"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/juicedata/juicefs/pkg/compress"
 	"io"
+	"math"
 	"os"
 	"path"
 	"runtime"
@@ -81,10 +84,10 @@ type node struct {
 }
 
 type namedNode struct {
-	node    `xorm:"extends"`
-	Files   []string `xorm:"blob"`
-	Name    []byte   `xorm:"varbinary(255)"`
-	Chunkid Ino
+	node `xorm:"extends"`
+	//Files   string `xorm:"blob"`
+	Name    []byte `xorm:"varbinary(255)"`
+	Chunkid uint64
 }
 
 type chunk struct {
@@ -95,15 +98,37 @@ type chunk struct {
 }
 
 type chunkFile struct {
-	Id      int64    `xorm:"pk bigserial"`
-	Inode   Ino      `xorm:"unique(chunk_file) notnull"`
-	ChunkId uint64   `xorm:"chunkid unique(chunk_file) notnull"`
-	Files   []string `xorm:"mediumblob"`
-	Name    []byte   `xorm:"varbinary(255)"`
+	Id      int64  `xorm:"pk bigserial"`
+	Inode   Ino    `xorm:"unique(chunk_file) notnull"`
+	ChunkId uint64 `xorm:"chunkid unique(chunk_file) notnull"`
+	//Files   string `xorm:"blob"`
+	Name []byte `xorm:"varbinary(255)"`
+	//Files []sliceFile `xorm:"has_many(fk:ChunkId)"`
 }
 
 func (c *chunkFile) TableName() string {
 	return "jfs_chunk_file"
+}
+
+type sliceFile struct {
+	Id      int64  `xorm:"pk bigserial"`
+	ChunkId uint64 `xorm:"chunkid unique(slice_file) notnull"`
+	Files   string `xorm:"blob"`
+}
+
+func (c *sliceFile) TableName() string {
+	return "jfs_slice_file"
+}
+
+type sliceInfo struct {
+	ChunkId uint64
+	Files   string
+}
+
+type ChunkInfo struct {
+	chunkMap map[uint64][]string
+	Files    []string
+	mux      sync.Mutex
 }
 
 type sliceRef struct {
@@ -265,8 +290,8 @@ func (m *dbMeta) Init(format Format, force bool) error {
 	if err := m.syncTable(new(node), new(symlink), new(xattr)); err != nil {
 		return fmt.Errorf("create table node, symlink, xattr: %s", err)
 	}
-	if err := m.syncTable(new(chunk), new(sliceRef), new(delslices), new(chunkFile)); err != nil {
-		return fmt.Errorf("create table chunk, chunk_ref, delslices, chunk_file: %s", err)
+	if err := m.syncTable(new(chunk), new(sliceRef), new(delslices), new(chunkFile), new(sliceFile)); err != nil {
+		return fmt.Errorf("create table chunk, chunk_ref, delslices, chunk_file, file: %s", err)
 	}
 	if err := m.syncTable(new(session2), new(sustained), new(delfile)); err != nil {
 		return fmt.Errorf("create table session2, sustaind, delfile: %s", err)
@@ -357,7 +382,7 @@ func (m *dbMeta) Reset() error {
 		&node{}, &edge{}, &symlink{}, &xattr{},
 		&chunk{}, &sliceRef{}, &delslices{},
 		&session{}, &session2{}, &sustained{}, &delfile{},
-		&flock{}, &plock{}, &chunkFile{})
+		&flock{}, &plock{}, &chunkFile{}, &sliceFile{})
 }
 
 func (m *dbMeta) doLoad() (data []byte, err error) {
@@ -384,8 +409,8 @@ func (m *dbMeta) doNewSession(sinfo []byte) error {
 		return fmt.Errorf("update table session2, delslices: %s", err)
 	}
 	// add primary key
-	if err = m.syncTable(new(edge), new(chunk), new(chunkFile), new(xattr), new(sustained)); err != nil {
-		return fmt.Errorf("update table edge, chunk, xattr, sustained: %s", err)
+	if err = m.syncTable(new(edge), new(chunk), new(chunkFile), new(sliceFile), new(xattr), new(sustained)); err != nil {
+		return fmt.Errorf("update table edge, chunk, chunkFile, files, xattr, sustained: %s", err)
 	}
 	// update the owner from uint64 to int64
 	if err = m.syncTable(new(flock), new(plock)); err != nil {
@@ -1306,9 +1331,13 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string) syscall.Errno {
 
 		// delete chunk file info
 		logger.Debugf("delete chunk file: %v", e.Inode)
-		if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
+		if _, err := s.Table(&chunkFile{}).Join("INNER", "jfs_slice_file", "jfs_chunk_file.chunkid = jfs_slice_file.chunkid").Delete(&chunkFile{Inode: e.Inode}); err != nil {
 			return err
 		}
+
+		//if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
+		//	return err
+		//}
 
 		if updateParent {
 			if _, err = s.Cols("mtime", "ctime").Update(&pn, &node{Inode: pn.Inode}); err != nil {
@@ -1441,9 +1470,12 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string) syscall.Errno {
 
 		//delete chunk file info
 		logger.Debugf("delete chunk file: %v", e.Inode)
-		if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
+		if _, err := s.Table(&chunkFile{}).Join("INNER", "jfs_slice_file", "jfs_chunk_file.chunkid = jfs_slice_file.chunkid").Delete(&chunkFile{Inode: e.Inode}); err != nil {
 			return err
 		}
+		//if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
+		//	return err
+		//}
 
 		if trash > 0 {
 			if _, err = s.Cols("ctime", "parent").Update(&n, &node{Inode: n.Inode}); err != nil {
@@ -2369,9 +2401,12 @@ func (m *dbMeta) deleteChunk(inode Ino, indx uint32) error {
 			return nil
 		}
 
-		if _, err := s.Delete(&chunkFile{Inode: f.Inode}); err != nil {
+		if _, err := s.Table(&chunkFile{}).Join("INNER", "jfs_slice_file", "jfs_chunk_file.chunkid = jfs_slice_file.chunkid").Delete(&chunkFile{Inode: f.Inode}); err != nil {
 			return err
 		}
+		//if _, err := s.Delete(&chunkFile{Inode: f.Inode}); err != nil {
+		//	return err
+		//}
 
 		return nil
 	})
@@ -3238,8 +3273,8 @@ func (m *dbMeta) LoadMeta(r io.Reader) error {
 	if err = m.syncTable(new(node), new(edge), new(symlink), new(xattr)); err != nil {
 		return fmt.Errorf("create table node, edge, symlink, xattr: %s", err)
 	}
-	if err = m.syncTable(new(chunk), new(sliceRef), new(chunkFile), new(delslices)); err != nil {
-		return fmt.Errorf("create table chunk, chunk_ref, delslices: %s", err)
+	if err = m.syncTable(new(chunk), new(sliceRef), new(chunkFile), new(sliceFile), new(delslices)); err != nil {
+		return fmt.Errorf("create table chunk, chunkFile, sliceFile, chunk_ref, delslices: %s", err)
 	}
 	if err = m.syncTable(new(session2), new(sustained), new(delfile)); err != nil {
 		return fmt.Errorf("create table session2, sustaind, delfile: %s", err)
@@ -3413,48 +3448,37 @@ func (m *dbMeta) getMountPath() error {
 }
 
 func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
+	zlibCompress := compress.Zlib{Level: zlib.BestCompression}
 	//sync the file list by the chunk inode
 	if name == "" {
-		var filePaths []chunkFile
+		var chunks []chunkFile
 		err := m.txn(func(s *xorm.Session) error {
-			err := s.Table((&chunkFile{}).TableName()).Find(&filePaths, &chunkFile{Inode: inode})
+			err := s.Table((&chunkFile{}).TableName()).Find(&chunks, &chunkFile{Inode: inode})
 			if err != nil {
 				logger.Fatal(err)
 				return err
 			}
 
-			for _, filePath := range filePaths {
+			for _, chunk := range chunks {
 				var files []string
-				files = m.extractChunkFiles(m.getAbsPaths(ctx, filePath.Inode))
+				files = m.extractChunkFiles(m.getAbsPaths(ctx, chunk.Inode))
 				logger.Debugf("files: %v", files)
-				filePath.Files = files
+				buf, err := json.Marshal(&files)
+				fileCompress, _ := zlibCompress.Compress(buf)
 
-				logger.Debugf("update chunk file info: %v", name)
-				if _, err = s.Cols("files").Update(&name, &chunkFile{Inode: filePath.Inode}); err != nil {
+				if err = mustInsert(s, sliceFile{ChunkId: chunk.ChunkId, Files: string(fileCompress)}); err != nil {
 					return err
 				}
+
+				logger.Debugf("insert slice file info: %v", name)
+				//if _, err = s.Cols("files").Update(&name, &chunkFile{Inode: chunk.Inode}); err != nil {
+				//	return err
+				//}
 				return err
 			}
 
 			return err
 		})
-
-		//for _, filePath := range filePaths {
-		//	var files []string
-		//	files = m.extractChunkFiles(m.getAbsPaths(ctx, filePath.Inode))
-		//	logger.Debugf("files: %v", files)
-		//	filePath.Files = files
-		//	err := m.txn(func(s *xorm.Session) error {
-		//		logger.Debugf("update chunk file info: %v", name)
-		//		if _, err = s.Cols("files").Update(&name, &chunkFile{Inode: filePath.Inode}); err != nil {
-		//			return err
-		//		}
-		//		return err
-		//	})
-		//	if err != nil {
-		//		return err
-		//	}
-		//}
 		return err
 	}
 
@@ -3471,34 +3495,21 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 			for _, info := range chunkFiles {
 				var files []string
 				files = m.extractChunkFiles(m.getAbsPaths(ctx, info.Inode))
-				info.Files = files
-				logger.Debugf("update chunk file info: %v", info.Inode)
-				if _, err = s.Cols("files").Update(&info, &chunkFile{Inode: info.Inode}); err != nil {
+				buf, err := json.Marshal(&files)
+				fileCompress, _ := zlibCompress.Compress(buf)
+				if err = mustInsert(s, sliceFile{ChunkId: info.ChunkId, Files: string(fileCompress)}); err != nil {
 					return err
 				}
+				logger.Debugf("update chunk file info: %v", info.Inode)
+				//if _, err = s.Cols("files").Update(&info, &chunkFile{Inode: info.Inode}); err != nil {
+				//	return err
+				//}
 				return err
 
 			}
 
 			return err
 		})
-
-		//for _, name := range chunkFiles {
-		//	var files []string
-		//	files = m.extractChunkFiles(m.getAbsPaths(ctx, name.Inode))
-		//	//logger.Debugf("files: %v", files)
-		//	name.Files = files
-		//	err := m.txn(func(s *xorm.Session) error {
-		//		logger.Debugf("update chunk file info: %v", name.Inode)
-		//		if _, err = s.Cols("files").Update(&name, &chunkFile{Inode: name.Inode}); err != nil {
-		//			return err
-		//		}
-		//		return err
-		//	})
-		//	if err != nil {
-		//		return err
-		//	}
-		//}
 		return err
 	} else {
 		var files []string
@@ -3520,21 +3531,23 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 			}
 
 			logger.Debugf("update chunk file info: %v, %v", inode)
-			f.Files = files
-			if _, err := s.Cols("files").Update(&f, chunkFile{Inode: inode}); err != nil {
+			buf, err := json.Marshal(&files)
+			fileCompress, _ := zlibCompress.Compress(buf)
+			if err = mustInsert(s, sliceFile{ChunkId: f.ChunkId, Files: string(fileCompress)}); err != nil {
 				return err
 			}
+			//if _, err := s.Cols("files").Update(&f, chunkFile{Inode: inode}); err != nil {
+			//	return err
+			//}
 			return err
 		})
 		return err
 	}
 }
 
-func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool) (map[Ino][]string, error) {
-	chunkMaps := make(map[Ino][]string)
+func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int) (map[uint64][]string, []string, error) {
+	var nodes []namedNode
 	err := m.roTxn(func(s *xorm.Session) error {
-		var nodes []namedNode
-		var files []string
 		if isDir {
 			s.Table(&edge{})
 			s = s.Join("INNER", &chunkFile{}, "jfs_edge.inode = jfs_chunk_file.inode")
@@ -3553,29 +3566,112 @@ func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir boo
 				return err
 			}
 		}
+		return nil
+	})
 
-		//process nodes info, extract the file list
-		for _, node := range nodes {
-			if len(node.Name) == 0 {
-				logger.Errorf("Corrupt entry with empty name: inode %d", inode)
-				continue
-			}
-			logger.Debugf("name: %s", string(node.Name))
-			index := strings.LastIndex(string(node.Name), "_")
-			if index < 0 {
-				logger.Debugf("filter non dataset info: %v", node.Name)
-				continue
-			}
-			subName := string(node.Name)[:index]
-			if name != "" {
-				if name == subName {
-					files = append(files, node.Files...)
-				}
-			} else {
-				files = append(files, node.Files...)
-			}
+	infos, err := m.ScanInfos(nodes, name, work)
+	if err != nil {
+		return nil, nil, err
+	}
 
-			chunkMaps[node.Chunkid] = files
+	return infos.chunkMap, infos.Files, err
+}
+
+func SplitArray(nodes []namedNode, number int) [][]namedNode {
+	if nodes == nil {
+		return nil
+	}
+	if number <= 0 {
+		return nil
+	}
+
+	size := int(math.Ceil(float64(len(nodes)) / float64(number)))
+
+	var slices [][]namedNode
+	for i := 0; i < len(nodes); i += size {
+		end := i + size
+		if end > len(nodes) {
+			end = len(nodes)
+		}
+		slices = append(slices, nodes[i:end])
+	}
+	return slices
+}
+
+func (m *dbMeta) ScanInfos(nodes []namedNode, name string, work int) (*ChunkInfo, error) {
+	slices := SplitArray(nodes, work)
+	if slices == nil {
+		return nil, nil
+	}
+
+	info := ChunkInfo{
+		chunkMap: make(map[uint64][]string),
+		Files:    []string{},
+		mux:      sync.Mutex{},
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < work; i++ {
+		if i > len(slices)-1 {
+			break
+		}
+		wg.Add(1)
+		go func(i int) {
+			err := m.ParsingFiles(slices[i], name, &info, &wg)
+			if err != nil {
+
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	return &info, nil
+}
+
+func (m *dbMeta) ParsingFiles(nodes []namedNode, name string, info *ChunkInfo, wg *sync.WaitGroup) error {
+	defer wg.Done()
+	var chunkIds []uint64
+	for _, node := range nodes {
+		if len(node.Name) == 0 {
+			logger.Errorf("Corrupt entry with empty name: inode %d", node.Inode)
+			continue
+		}
+		logger.Debugf("name: %s", string(node.Name))
+		index := strings.LastIndex(string(node.Name), "_")
+		if index < 0 {
+			logger.Debugf("filter non dataset info: %v", node.Name)
+			continue
+		}
+		subName := string(node.Name)[:index]
+
+		//json.Unmarshal([]byte(node.Files), &fileList)
+		if name != "" {
+			if name == subName {
+				chunkIds = append(chunkIds, node.Chunkid)
+			}
+		} else {
+			chunkIds = append(chunkIds, node.Chunkid)
+		}
+	}
+
+	var fileList []string
+	chunkMap := make(map[uint64][]string)
+	zlibCompress := compress.Zlib{Level: zlib.BestCompression}
+	err := m.roTxn(func(s *xorm.Session) error {
+		err := s.Table(&sliceFile{}).In("chunkid", chunkIds).Cols("chunkid", "files").Iterate(new(sliceInfo), func(idx int, bean interface{}) error {
+			// Process each item in the batch.
+			item := bean.(*sliceInfo)
+			filesDecompress, _ := zlibCompress.Decompress([]byte(item.Files))
+			var files []string
+			err := json.Unmarshal(filesDecompress, &files)
+			if err != nil {
+				return err
+			}
+			fileList = append(fileList, files...)
+			chunkMap[item.ChunkId] = files
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 		return nil
 	})
@@ -3583,7 +3679,15 @@ func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir boo
 	if err != nil {
 		logger.Errorln(err)
 	}
-	return chunkMaps, err
+
+	info.mux.Lock()
+	info.Files = append(info.Files, fileList...)
+	for k, v := range chunkMap {
+		info.chunkMap[k] = v
+	}
+	defer info.mux.Unlock()
+
+	return err
 }
 
 func (m *dbMeta) MountPaths() ([]string, error) {
@@ -3626,51 +3730,73 @@ func (m *dbMeta) MountPaths() ([]string, error) {
 	return mountPaths, err
 }
 
-func (m *dbMeta) GetMetaInfo(name string) (map[Ino][]string, error) {
-	chunkMaps := make(map[Ino][]string)
-	err := m.roTxn(func(s *xorm.Session) error {
-		var nodes []namedNode
-		var files []string
-
-		s.Table(&chunkFile{})
-
-		if name != "" {
-			s = s.Where("jfs_chunk_file.name like ?", name+"%")
-		}
-
-		if err := s.Find(&nodes); err != nil {
-			logger.Errorf("query meta info error: %v", err)
-			return err
-		}
-
-		//process nodes info, extract the file list
-		for _, node := range nodes {
-			if len(node.Name) == 0 {
-				logger.Errorf("Corrupt entry with empty name: name %s", name)
-				continue
-			}
-			logger.Debugf("name: %s", string(node.Name))
-			index := strings.LastIndex(string(node.Name), "_")
-			if index < 0 {
-				logger.Debugf("filter non dataset info: %v", node.Name)
-				continue
-			}
-			subName := string(node.Name)[:index]
-			if name != "" {
-				if name == subName {
-					files = append(files, node.Files...)
-				}
-			} else {
-				files = append(files, node.Files...)
-			}
-
-			chunkMaps[node.Chunkid] = files
-		}
-		return nil
-	})
-
-	if err != nil {
-		logger.Errorln(err)
-	}
-	return chunkMaps, err
-}
+//func (m *dbMeta) GetMetaInfo(name string) (map[uint64][]string, error) {
+//	chunkMaps := make(map[uint64][]string)
+//	var nodes []namedNode
+//	err := m.roTxn(func(s *xorm.Session) error {
+//		s.Table(&chunkFile{})
+//
+//		if name != "" {
+//			s = s.Where("jfs_chunk_file.name like ?", name+"%")
+//		}
+//
+//		if err := s.Find(&nodes); err != nil {
+//			logger.Errorf("query meta info error: %v", err)
+//			return err
+//		}
+//
+//		return nil
+//	})
+//
+//	var files []string
+//	err = m.roTxn(func(s *xorm.Session) error {
+//		zlibCompress := compress.Zlib{Level: zlib.BestCompression}
+//		var fileList []string
+//		//process nodes info, extract the file list
+//		for _, node := range nodes {
+//			if len(node.Name) == 0 {
+//				logger.Errorf("Corrupt entry with empty name: name %s", name)
+//				continue
+//			}
+//			logger.Debugf("name: %s", string(node.Name))
+//			index := strings.LastIndex(string(node.Name), "_")
+//			if index < 0 {
+//				logger.Debugf("filter non dataset info: %v", node.Name)
+//				continue
+//			}
+//			subName := string(node.Name)[:index]
+//
+//			slices := sliceFile{ChunkId: node.Chunkid}
+//			ok, err := s.Cols("Files").Get(&slices)
+//			if err != nil {
+//				return err
+//			}
+//			if !ok {
+//				return nil
+//			}
+//
+//			filesDecompress, _ := zlibCompress.Decompress([]byte(slices.Files))
+//			err = json.Unmarshal(filesDecompress, &fileList)
+//			if err != nil {
+//				return err
+//			}
+//
+//			//json.Unmarshal([]byte(node.Files), &fileList)
+//			if name != "" {
+//				if name == subName {
+//					files = append(files, fileList...)
+//				}
+//			} else {
+//				files = append(files, fileList...)
+//			}
+//
+//			chunkMaps[node.Chunkid] = files
+//		}
+//		return nil
+//	})
+//
+//	if err != nil {
+//		logger.Errorln(err)
+//	}
+//	return chunkMaps, err
+//}
