@@ -2748,11 +2748,11 @@ func (m *kvMeta) LoadMeta(r io.Reader) error {
 	})
 }
 
-func (m *kvMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
+func (m *kvMeta) SyncChunkFiles(ctx Context, inode Ino, name string, compression bool) error {
 	return nil
 }
 
-func (m *kvMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int) (map[uint64][]string, []string, error) {
+func (m *kvMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int, compression bool) (map[uint64][]string, []string, error) {
 	return nil, nil, nil
 }
 

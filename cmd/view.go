@@ -72,6 +72,13 @@ $ juicefs view /home/wjy/pack/imagenet -m "mysql://jfs:@(127.0.0.1:3306)/juicefs
 				Value:   50,
 				Usage:   "number of concurrent threads in the thread pool(max number 500)",
 			},
+
+			&cli.BoolFlag{
+				Name:    "compress",
+				Aliases: []string{"c"},
+				Value:   true,
+				Usage:   "compressed aggregate data ",
+			},
 		},
 	}
 }
@@ -151,7 +158,7 @@ func view(ctx *cli.Context) error {
 		return os.ErrInvalid
 	}
 
-	err = viewMetaInfo(ctx, m, meta.Ino(inode), name, pathInfo.IsDir(), int(ctx.Uint("works")))
+	err = viewMetaInfo(ctx, m, meta.Ino(inode), name, pathInfo.IsDir(), int(ctx.Uint("works")), bool(ctx.Bool("compress")))
 	if err != nil {
 		logger.Errorln(err)
 		return err
@@ -159,8 +166,8 @@ func view(ctx *cli.Context) error {
 	return nil
 }
 
-func viewMetaInfo(ctx *cli.Context, m meta.Meta, inode meta.Ino, name string, isDir bool, work int) error {
-	_, files, err := m.GetChunkMetaInfo(meta.Background, inode, name, isDir, work)
+func viewMetaInfo(ctx *cli.Context, m meta.Meta, inode meta.Ino, name string, isDir bool, work int, compression bool) error {
+	_, files, err := m.GetChunkMetaInfo(meta.Background, inode, name, isDir, work, compression)
 	if err != nil {
 		logger.Errorln(err)
 		return err

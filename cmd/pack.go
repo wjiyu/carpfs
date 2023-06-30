@@ -12,10 +12,10 @@ import (
 	"sync"
 )
 
-const (
-	maxChunkSize = 4 * 1024 * 1024 // 4MB
-	numWorkers   = 4               // number of workers in the thread pool
-)
+//const (
+//	//maxChunkSize = 4 * 1024 * 1024 // 4MB
+//	numWorkers   = 4               // number of workers in the thread pool
+//)
 
 var (
 	mutex sync.Mutex
@@ -41,7 +41,7 @@ $ juicefs pack /home/wjy/imagenet /mnt/jfs -m "mysql://jfs:@(127.0.0.1:3306)/jui
 			&cli.UintFlag{
 				Name:    "pack-size",
 				Aliases: []string{"s"},
-				Value:   4,
+				Value:   3,
 				Usage:   "size of each pack in MiB(max size 4MB)",
 			},
 
@@ -63,7 +63,7 @@ $ juicefs pack /home/wjy/imagenet /mnt/jfs -m "mysql://jfs:@(127.0.0.1:3306)/jui
 				Name:    "partition-threads",
 				Aliases: []string{"r"},
 				Value:   5,
-				Usage:   "number of partition concurrent threads in the thread pool(max number 100)",
+				Usage:   "number of partition concurrent threads in the thread pool(max number 200)",
 			},
 
 			&cli.StringFlag{
@@ -76,6 +76,12 @@ $ juicefs pack /home/wjy/imagenet /mnt/jfs -m "mysql://jfs:@(127.0.0.1:3306)/jui
 				Name:    "mount-point",
 				Aliases: []string{"p"},
 				Usage:   "mount path",
+			},
+			&cli.BoolFlag{
+				Name:    "compress",
+				Aliases: []string{"c"},
+				Value:   true,
+				Usage:   "compressed aggregate data ",
 			},
 		},
 	}
@@ -100,7 +106,7 @@ func pack(ctx *cli.Context) error {
 		return os.ErrInvalid
 	}
 
-	if ctx.Uint("partition-threads") <= 0 || ctx.Uint("partition-threads") > 100 {
+	if ctx.Uint("partition-threads") <= 0 || ctx.Uint("partition-threads") > 200 {
 		return os.ErrInvalid
 	}
 
@@ -160,7 +166,7 @@ func packChunk(ctx *cli.Context, src, dst string) {
 	// start the workers
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go worker(m, src, dst, filePathArrays, &wg)
+		go worker(m, src, dst, filePathArrays, &wg, ctx.Bool("compress"))
 	}
 
 	// scan data set paths
@@ -349,7 +355,7 @@ func scanSlice(pathSlices <-chan []string, filePathArrays chan<- []string, wg *s
 				continue
 			}
 			fileSize := fileInfo.Size()
-			//log.Println(sumSize, fileSize)
+
 			// if adding the file would exceed the max size, send the slice to the workers
 			if sumSize+fileSize > maxChunkSize {
 				// send the slice to the workers
@@ -443,7 +449,7 @@ func scanPaths(dirPath string, filePaths chan<- map[string]int64, sem chan struc
 //	close(filePaths)
 //}
 
-func worker(m meta.Meta, src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup) {
+func worker(m meta.Meta, src, dst string, filePathArrays <-chan []string, wg *sync.WaitGroup, compression bool) {
 
 	// Create a directory for the destination path
 	dstDir := dst + string(os.PathSeparator) + "pack" + string(os.PathSeparator) + filepath.Base(src)
@@ -541,7 +547,7 @@ func worker(m meta.Meta, src, dst string, filePathArrays <-chan []string, wg *sy
 		//<-filePathArrays
 
 		//sync chunk file list info to table
-		err = meta.SyncChunkInfo(meta.Background, m, 0, filepath.Base(name))
+		err = meta.SyncChunkInfo(meta.Background, m, 0, filepath.Base(name), compression)
 		if err != nil {
 			logger.Errorf("sync chunk file info error: %s", err)
 			continue

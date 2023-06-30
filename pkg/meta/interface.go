@@ -354,10 +354,10 @@ type Meta interface {
 	InitMetrics(registerer prometheus.Registerer)
 
 	//sync chunk files to table
-	SyncChunkFiles(ctx Context, inode Ino, name string) error
+	SyncChunkFiles(ctx Context, inode Ino, name string, compression bool) error
 
 	//query chunk info
-	GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int) (map[uint64][]string, []string, error)
+	GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int, compression bool) (map[uint64][]string, []string, error)
 
 	//get mount path
 	MountPaths() ([]string, error)
@@ -508,14 +508,14 @@ func GetPaths(m Meta, ctx Context, inode Ino) []string {
 	return paths
 }
 
-func SyncChunkInfo(ctx Context, m Meta, inode Ino, name string) error {
-	err := m.SyncChunkFiles(ctx, inode, name)
+func SyncChunkInfo(ctx Context, m Meta, inode Ino, name string, compression bool) error {
+	err := m.SyncChunkFiles(ctx, inode, name, compression)
 	if err != nil {
 		logger.Errorf("sync chunk files error: %s", err)
 	}
 	return err
 }
 
-func ViewChunkMeta(ctx Context, m Meta, inode Ino, name string, isDir bool, work int) (map[uint64][]string, []string, error) {
-	return m.GetChunkMetaInfo(ctx, inode, name, isDir, work)
-}
+//func ViewChunkMeta(ctx Context, m Meta, inode Ino, name string, isDir bool, work int, compression bool) (map[uint64][]string, []string, error) {
+//	return m.GetChunkMetaInfo(ctx, inode, name, isDir, work, compression)
+//}

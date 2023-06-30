@@ -3459,11 +3459,11 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 	return err
 }
 
-func (m *redisMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
+func (m *redisMeta) SyncChunkFiles(ctx Context, inode Ino, name string, compression bool) error {
 	return nil
 }
 
-func (m *redisMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int) (map[uint64][]string, []string, error) {
+func (m *redisMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int, compression bool) (map[uint64][]string, []string, error) {
 	return nil, nil, nil
 }
 

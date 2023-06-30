@@ -1331,9 +1331,12 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string) syscall.Errno {
 
 		// delete chunk file info
 		logger.Debugf("delete chunk file: %v", e.Inode)
-		if _, err := s.Table(&chunkFile{}).Join("INNER", "jfs_slice_file", "jfs_chunk_file.chunkid = jfs_slice_file.chunkid").Delete(&chunkFile{Inode: e.Inode}); err != nil {
+		if _, err := s.Exec("DELETE a, b FROM jfs_chunk_file a LEFT JOIN jfs_slice_file b ON a.chunkid=b.chunkid WHERE a.inode = ?", e.Inode); err != nil {
 			return err
 		}
+		//if _, err := s.Table(&chunkFile{}).Join("INNER", "jfs_slice_file", "jfs_chunk_file.chunkid = jfs_slice_file.chunkid").Delete(&chunkFile{Inode: e.Inode}); err != nil {
+		//	return err
+		//}
 
 		//if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
 		//	return err
@@ -1470,7 +1473,7 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string) syscall.Errno {
 
 		//delete chunk file info
 		logger.Debugf("delete chunk file: %v", e.Inode)
-		if _, err := s.Table(&chunkFile{}).Join("INNER", "jfs_slice_file", "jfs_chunk_file.chunkid = jfs_slice_file.chunkid").Delete(&chunkFile{Inode: e.Inode}); err != nil {
+		if _, err := s.Exec("DELETE a, b FROM jfs_chunk_file a LEFT JOIN jfs_slice_file b ON a.chunkid=b.chunkid WHERE a.inode = ?", e.Inode); err != nil {
 			return err
 		}
 		//if _, err := s.Delete(&chunkFile{Inode: e.Inode}); err != nil {
@@ -1798,7 +1801,7 @@ func (m *dbMeta) doLink(ctx Context, inode, parent Ino, name string, attr *Attr)
 		//update chunk file info
 		logger.Debugf("update chunk file info: %v, %v", inode, name)
 		var f = chunkFile{Inode: inode}
-		ok, err = s.ForUpdate().Get(&f)
+		ok, err = s.Get(&f)
 		if err != nil {
 			return err
 		}
@@ -2122,23 +2125,55 @@ func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 		}
 		buf := marshalSlice(off, slice.Id, slice.Size, slice.Off, slice.Len)
 
-		//query edge inode->name
-		var e = edge{Inode: inode}
-		_, err = s.ForUpdate().Get(&e)
-		if err != nil {
-			return err
-		}
-
 		if ok {
 			if err := m.appendSlice(s, inode, indx, buf); err != nil {
 				return err
 			}
 
-			//chunk file inode->chunkid
-			cs := buildSlice(readSliceBuf(ck.Slices))
+		} else {
+			if err = mustInsert(s, &chunk{Inode: inode, Indx: indx, Slices: buf}); err != nil {
+				return err
+			}
+		}
+
+		if err = mustInsert(s, sliceRef{slice.Id, slice.Size, 1}); err != nil {
+			return err
+		}
+		_, err = s.Cols("length", "mtime", "ctime").Update(&n, &node{Inode: inode})
+		if err == nil {
+			needCompact = (len(ck.Slices)/sliceBytes)%100 == 99
+		}
+
+		return err
+	}, inode)
+	if err == nil {
+		if needCompact {
+			go m.compactChunk(inode, indx, false)
+		}
+		m.updateStats(newSpace, 0)
+	}
+
+	//chunk file
+	err = m.txn(func(s *xorm.Session) error {
+		var ck = chunk{Inode: inode, Indx: indx}
+		ok, err := s.MustCols("indx").Get(&ck)
+		if err != nil {
+			return err
+		}
+		//chunk file inode->chunkid
+		cs := buildSlice(readSliceBuf(ck.Slices))
+
+		//query edge inode->name
+		var e = edge{Inode: inode}
+		_, err = s.Get(&e)
+		if err != nil {
+			return err
+		}
+
+		if ok {
 			for _, v := range cs {
 				var cf = chunkFile{Inode: inode, ChunkId: v.Id}
-				ok, err = s.ForUpdate().Get(&cf)
+				ok, err = s.Get(&cf)
 				if err != nil {
 					return err
 				}
@@ -2156,34 +2191,16 @@ func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 					}
 				}
 			}
-
 		} else {
-			if err = mustInsert(s, &chunk{Inode: inode, Indx: indx, Slices: buf}); err != nil {
-				return err
-			}
-
 			//insert chunk file info
 			logger.Debugf("insert chunk file info: %v, %v, %v", inode, slice.Id, string(e.Name))
 			if err = mustInsert(s, chunkFile{Inode: inode, ChunkId: slice.Id, Name: e.Name}); err != nil {
 				return err
 			}
 		}
-		if err = mustInsert(s, sliceRef{slice.Id, slice.Size, 1}); err != nil {
-			return err
-		}
-		_, err = s.Cols("length", "mtime", "ctime").Update(&n, &node{Inode: inode})
-		if err == nil {
-			needCompact = (len(ck.Slices)/sliceBytes)%100 == 99
-		}
-
 		return err
 	}, inode)
-	if err == nil {
-		if needCompact {
-			go m.compactChunk(inode, indx, false)
-		}
-		m.updateStats(newSpace, 0)
-	}
+
 	return errno(err)
 }
 
@@ -2393,7 +2410,7 @@ func (m *dbMeta) deleteChunk(inode Ino, indx uint32) error {
 		//delete chunk file
 		logger.Debugf("delete chunk file: %v", inode)
 		var f = chunkFile{Inode: inode}
-		ok, err := s.ForUpdate().MustCols("inode").Get(&f)
+		ok, err := s.MustCols("inode").Get(&f)
 		if err != nil {
 			return err
 		}
@@ -2401,12 +2418,9 @@ func (m *dbMeta) deleteChunk(inode Ino, indx uint32) error {
 			return nil
 		}
 
-		if _, err := s.Table(&chunkFile{}).Join("INNER", "jfs_slice_file", "jfs_chunk_file.chunkid = jfs_slice_file.chunkid").Delete(&chunkFile{Inode: f.Inode}); err != nil {
+		if _, err := s.Exec("DELETE a, b FROM jfs_chunk_file a LEFT JOIN jfs_slice_file b ON a.chunkid=b.chunkid WHERE a.inode = ?", f.Inode); err != nil {
 			return err
 		}
-		//if _, err := s.Delete(&chunkFile{Inode: f.Inode}); err != nil {
-		//	return err
-		//}
 
 		return nil
 	})
@@ -3447,7 +3461,7 @@ func (m *dbMeta) getMountPath() error {
 	return err
 }
 
-func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
+func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string, compression bool) error {
 	zlibCompress := compress.Zlib{Level: zlib.BestCompression}
 	//sync the file list by the chunk inode
 	if name == "" {
@@ -3464,10 +3478,30 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 				files = m.extractChunkFiles(m.getAbsPaths(ctx, chunk.Inode))
 				logger.Debugf("files: %v", files)
 				buf, err := json.Marshal(&files)
-				fileCompress, _ := zlibCompress.Compress(buf)
 
-				if err = mustInsert(s, sliceFile{ChunkId: chunk.ChunkId, Files: string(fileCompress)}); err != nil {
+				var sf = sliceFile{ChunkId: chunk.ChunkId}
+				ok, err := s.Get(&sf)
+				if err != nil {
 					return err
+				}
+
+				var sliceFiles []byte
+
+				if compression {
+					sliceFiles, _ = zlibCompress.Compress(buf)
+				} else {
+					sliceFiles = buf
+				}
+
+				if ok {
+					sf.Files = string(sliceFiles)
+					if _, err = s.Cols("files").Update(&sf, &sliceFile{ChunkId: chunk.ChunkId}); err != nil {
+						return err
+					}
+				} else {
+					if err = mustInsert(s, sliceFile{ChunkId: chunk.ChunkId, Files: string(sliceFiles)}); err != nil {
+						return err
+					}
 				}
 
 				logger.Debugf("insert slice file info: %v", name)
@@ -3496,9 +3530,29 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 				var files []string
 				files = m.extractChunkFiles(m.getAbsPaths(ctx, info.Inode))
 				buf, err := json.Marshal(&files)
-				fileCompress, _ := zlibCompress.Compress(buf)
-				if err = mustInsert(s, sliceFile{ChunkId: info.ChunkId, Files: string(fileCompress)}); err != nil {
+
+				var sf = sliceFile{ChunkId: info.ChunkId}
+				ok, err := s.Get(&sf)
+				if err != nil {
 					return err
+				}
+				var sliceFiles []byte
+
+				if compression {
+					sliceFiles, _ = zlibCompress.Compress(buf)
+				} else {
+					sliceFiles = buf
+				}
+
+				if ok {
+					sf.Files = string(sliceFiles)
+					if _, err = s.Cols("files").Update(&sf, &sliceFile{ChunkId: info.ChunkId}); err != nil {
+						return err
+					}
+				} else {
+					if err = mustInsert(s, sliceFile{ChunkId: info.ChunkId, Files: string(sliceFiles)}); err != nil {
+						return err
+					}
 				}
 				logger.Debugf("update chunk file info: %v", info.Inode)
 				//if _, err = s.Cols("files").Update(&info, &chunkFile{Inode: info.Inode}); err != nil {
@@ -3522,7 +3576,7 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 		//update chunk file database info
 		err := m.txn(func(s *xorm.Session) error {
 			var f = chunkFile{Inode: inode}
-			ok, err := s.ForUpdate().MustCols("inode").Get(&f)
+			ok, err := s.MustCols("inode").Get(&f)
 			if err != nil {
 				return err
 			}
@@ -3532,9 +3586,28 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 
 			logger.Debugf("update chunk file info: %v, %v", inode)
 			buf, err := json.Marshal(&files)
-			fileCompress, _ := zlibCompress.Compress(buf)
-			if err = mustInsert(s, sliceFile{ChunkId: f.ChunkId, Files: string(fileCompress)}); err != nil {
+			var sf = sliceFile{ChunkId: f.ChunkId}
+			ok, err = s.Get(&sf)
+			if err != nil {
 				return err
+			}
+			var sliceFiles []byte
+
+			if compression {
+				sliceFiles, _ = zlibCompress.Compress(buf)
+			} else {
+				sliceFiles = buf
+			}
+
+			if ok {
+				sf.Files = string(sliceFiles)
+				if _, err = s.Cols("files").Update(&sf, &sliceFile{ChunkId: f.ChunkId}); err != nil {
+					return err
+				}
+			} else {
+				if err = mustInsert(s, sliceFile{ChunkId: f.ChunkId, Files: string(sliceFiles)}); err != nil {
+					return err
+				}
 			}
 			//if _, err := s.Cols("files").Update(&f, chunkFile{Inode: inode}); err != nil {
 			//	return err
@@ -3545,7 +3618,7 @@ func (m *dbMeta) SyncChunkFiles(ctx Context, inode Ino, name string) error {
 	}
 }
 
-func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int) (map[uint64][]string, []string, error) {
+func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir bool, work int, compression bool) (map[uint64][]string, []string, error) {
 	var nodes []namedNode
 	err := m.roTxn(func(s *xorm.Session) error {
 		if isDir {
@@ -3569,7 +3642,7 @@ func (m *dbMeta) GetChunkMetaInfo(ctx Context, inode Ino, name string, isDir boo
 		return nil
 	})
 
-	infos, err := m.ScanInfos(nodes, name, work)
+	infos, err := m.ScanInfos(nodes, name, work, compression)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3598,7 +3671,7 @@ func SplitArray(nodes []namedNode, number int) [][]namedNode {
 	return slices
 }
 
-func (m *dbMeta) ScanInfos(nodes []namedNode, name string, work int) (*ChunkInfo, error) {
+func (m *dbMeta) ScanInfos(nodes []namedNode, name string, work int, compression bool) (*ChunkInfo, error) {
 	slices := SplitArray(nodes, work)
 	if slices == nil {
 		return nil, nil
@@ -3616,7 +3689,7 @@ func (m *dbMeta) ScanInfos(nodes []namedNode, name string, work int) (*ChunkInfo
 		}
 		wg.Add(1)
 		go func(i int) {
-			err := m.ParsingFiles(slices[i], name, &info, &wg)
+			err := m.ParsingFiles(slices[i], name, &info, &wg, compression)
 			if err != nil {
 
 			}
@@ -3627,7 +3700,7 @@ func (m *dbMeta) ScanInfos(nodes []namedNode, name string, work int) (*ChunkInfo
 	return &info, nil
 }
 
-func (m *dbMeta) ParsingFiles(nodes []namedNode, name string, info *ChunkInfo, wg *sync.WaitGroup) error {
+func (m *dbMeta) ParsingFiles(nodes []namedNode, name string, info *ChunkInfo, wg *sync.WaitGroup, compression bool) error {
 	defer wg.Done()
 	var chunkIds []uint64
 	for _, node := range nodes {
@@ -3655,16 +3728,24 @@ func (m *dbMeta) ParsingFiles(nodes []namedNode, name string, info *ChunkInfo, w
 
 	var fileList []string
 	chunkMap := make(map[uint64][]string)
+
 	zlibCompress := compress.Zlib{Level: zlib.BestCompression}
 	err := m.roTxn(func(s *xorm.Session) error {
 		err := s.Table(&sliceFile{}).In("chunkid", chunkIds).Cols("chunkid", "files").Iterate(new(sliceInfo), func(idx int, bean interface{}) error {
 			// Process each item in the batch.
 			item := bean.(*sliceInfo)
-			filesDecompress, _ := zlibCompress.Decompress([]byte(item.Files))
 			var files []string
-			err := json.Unmarshal(filesDecompress, &files)
-			if err != nil {
-				return err
+			if compression {
+				filesDecompress, _ := zlibCompress.Decompress([]byte(item.Files))
+				err := json.Unmarshal(filesDecompress, &files)
+				if err != nil {
+					return err
+				}
+			} else {
+				err := json.Unmarshal([]byte(item.Files), &files)
+				if err != nil {
+					return err
+				}
 			}
 			fileList = append(fileList, files...)
 			chunkMap[item.ChunkId] = files
